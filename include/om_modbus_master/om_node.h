@@ -1,6 +1,8 @@
 #ifndef OM_NODE_H
 #define OM_NODE_H
 
+#include <string>
+#include <vector>
 
 using std::string;
 
