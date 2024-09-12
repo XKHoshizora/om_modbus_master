@@ -2,6 +2,7 @@
 #define OM_IDSHARE_MODE_H
 
 #include <string>
+#include <vector>
 
 namespace om_modbusRTU_node
 {
