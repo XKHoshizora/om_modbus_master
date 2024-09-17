@@ -123,6 +123,9 @@ def main():
         wait()
         rate.sleep()
 
+    # Add rospy.spin() after the main loop
+    rospy.spin()
+
 if __name__ == '__main__':
     try:
         main()
