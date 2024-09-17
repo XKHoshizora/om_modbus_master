@@ -40,9 +40,9 @@ def state_callback(msg):
 
 def wait():
     rospy.sleep(0.03)
-    rospy.spin()
+    rospy.spinOnce()
     while gState_driver == 1:
-        rospy.spin()
+        rospy.spinOnce()
 
 def init(pub):
     msg = om_query()
@@ -50,7 +50,8 @@ def init(pub):
     msg.func_code = 1
     msg.write_addr = 124
     msg.write_num = 1
-    msg.data = [0]
+    msg.data = [0] * 64  # Initialize with 64 zeros
+    msg.data[0] = 0  # Set the first element to 0
     pub.publish(msg)
     wait()
 
@@ -75,7 +76,8 @@ def main():
     msg.func_code = 1
     msg.write_addr = 4864
     msg.write_num = 32
-    msg.data = [1069, 1070, 1071] + [0] * 13 + [993, 994, 995, 996] + [0] * 12
+    msg.data = [0] * 64  # Initialize with 64 zeros
+    msg.data[:32] = [1069, 1070, 1071] + [0] * 13 + [993, 994, 995, 996] + [0] * 12
     pub.publish(msg)
     wait()
 
@@ -90,7 +92,8 @@ def main():
         msg.read_num = 3
         msg.write_addr = 4960
         msg.write_num = 4
-        msg.data = [1, x_spd, z_ang, y_spd]
+        msg.data = [0] * 64  # Initialize with 64 zeros
+        msg.data[:4] = [1, x_spd, z_ang, y_spd]
         pub.publish(msg)
 
         odom_quat = tf.transformations.quaternion_from_euler(0, 0, odm_th)
@@ -123,7 +126,6 @@ def main():
         wait()
         rate.sleep()
 
-    # Add rospy.spin() after the main loop
     rospy.spin()
 
 if __name__ == '__main__':
