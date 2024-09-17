@@ -18,4 +18,3 @@
         <param name="axis_num" type="str" value="$(arg axisNum)"/>
     </node>
 </launch>
-
