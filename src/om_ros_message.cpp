@@ -41,12 +41,10 @@
 * @version	Ver.1.00 Mar.11.2019 T.Takahashi
                          - 新規作成
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
-#include "om_modbus_master/om_ros_message.h"
-
 #include <cmath>
-
-#include "om_modbus_master/om_idshare_mode.h"
+#include "om_modbus_master/om_ros_message.h"
 #include "om_modbus_master/om_second_gen.h"
+#include "om_modbus_master/om_idshare_mode.h"
 
 using std::cout;
 using std::endl;

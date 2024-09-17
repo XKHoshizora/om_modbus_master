@@ -37,12 +37,10 @@
 * @version  Ver.1.05 April.5.2022 K.Yamaguchi
     - 新規作成
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
-#include "om_modbus_master/om_idshare_mode.h"
-
-#include <iostream>
 #include <string>
-
+#include <iostream>
 #include "ros/ros.h"
+#include "om_modbus_master/om_idshare_mode.h"
 
 namespace om_modbusRTU_node {
 

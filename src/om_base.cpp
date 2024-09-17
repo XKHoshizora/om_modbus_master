@@ -48,20 +48,18 @@
 * @version	Ver.1.00 Mar.11.2019 T.Takahashi
         - 新規作成
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
-#include "om_modbus_master/om_base.h"
-
+#include <thread>
 #include <fcntl.h>
+#include <termios.h>
 #include <linux/serial.h>
 #include <sys/ioctl.h>
-#include <termios.h>
-
-#include <algorithm>
 #include <cmath>
-#include <iterator>
 #include <string>
-#include <thread>
-#include <typeinfo>
 #include <vector>
+#include <algorithm>
+#include <iterator>
+#include "om_modbus_master/om_base.h"
+#include <typeinfo>
 
 using std::string;
 using std::thread;

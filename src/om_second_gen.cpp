@@ -42,7 +42,6 @@
                          - 新規作成
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
 #include "om_modbus_master/om_second_gen.h"
-
 #include "om_modbus_master/om_idshare_mode.h"
 
 namespace om_modbusRTU_node {

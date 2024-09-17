@@ -41,14 +41,13 @@
 * @version	Ver.1.00 Mar.11.2019 T.Takahashi
                          - 新規作成
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
-#include "om_modbus_master/om_node.h"
-
-#include "om_modbus_master/om_base.h"
-#include "om_modbus_master/om_broadcast.h"
-#include "om_modbus_master/om_first_gen.h"
-#include "om_modbus_master/om_ros_message.h"
-#include "om_modbus_master/om_second_gen.h"
 #include "ros/ros.h"
+#include "om_modbus_master/om_node.h"
+#include "om_modbus_master/om_base.h"
+#include "om_modbus_master/om_ros_message.h"
+#include "om_modbus_master/om_first_gen.h"
+#include "om_modbus_master/om_second_gen.h"
+#include "om_modbus_master/om_broadcast.h"
 
 using std::cout;
 using std::endl;

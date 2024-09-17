@@ -48,29 +48,13 @@ include_directories(include ${catkin_INCLUDE_DIRS})
 
 # # Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
-add_executable(om_modbusRTU_node
-    src/om_node.cpp
-    src/om_first_gen.cpp
-    src/om_ros_message.cpp
-    src/om_base.cpp
-    src/om_second_gen.cpp
-    src/om_broadcast.cpp
-    src/om_idshare_mode.cpp
-)
+add_executable(om_modbusRTU_node src/om_node.cpp src/om_first_gen.cpp src/om_ros_message.cpp src/om_base.cpp src/om_second_gen.cpp src/om_broadcast.cpp src/om_idshare_mode.cpp)
 
 add_executable(om_ros_node sample/cpp/MobiCon/om_changer.cpp)
 
 # add
-add_dependencies(om_modbusRTU_node
-    ${${PROJECT_NAME}_EXPORTED_TARGETS}
-    ${catkin_EXPORTED_TARGETS}
-)
-
+add_dependencies(om_modbusRTU_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(om_modbusRTU_node ${catkin_LIBRARIES})
 
-add_dependencies(om_ros_node
-    ${${PROJECT_NAME}_EXPORTED_TARGETS}
-    ${catkin_EXPORTED_TARGETS}
-)
-
+add_dependencies(om_ros_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(om_ros_node ${catkin_LIBRARIES})
