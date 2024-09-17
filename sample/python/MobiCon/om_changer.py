@@ -40,9 +40,9 @@ def state_callback(msg):
 
 def wait():
     rospy.sleep(0.03)
-    rospy.spin_once()
+    rospy.spin()
     while gState_driver == 1:
-        rospy.spin_once()
+        rospy.spin()
 
 def init(pub):
     msg = om_query()
