@@ -12,9 +12,9 @@ gState_driver = 0
 gState_mes = 0
 gState_error = 0
 
-x_spd = 0.0
-y_spd = 0.0
-z_ang = 0.0
+x_spd = 0
+y_spd = 0
+z_ang = 0
 odm_x = 0.0
 odm_y = 0.0
 odm_th = 0.0
@@ -72,7 +72,7 @@ def main_loop(pub, odom_pub, odom_broadcaster):
         msg.write_addr = 4960
         msg.write_num = 4
         msg.data = [0] * 64  # Initialize with 64 zeros
-        msg.data[:4] = [1, x_spd, z_ang, y_spd]
+        msg.data[:4] = [1, int(x_spd), int(z_ang), int(y_spd)]  # Ensure all values are integers
         pub.publish(msg)
 
         odom_quat = tf.transformations.quaternion_from_euler(0, 0, odm_th)
