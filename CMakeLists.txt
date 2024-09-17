@@ -58,3 +58,12 @@ target_link_libraries(om_modbusRTU_node ${catkin_LIBRARIES})
 
 add_dependencies(om_ros_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(om_ros_node ${catkin_LIBRARIES})
+
+#############
+## Install ##
+#############
+
+catkin_install_python(PROGRAMS
+  scripts/om_changer.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
