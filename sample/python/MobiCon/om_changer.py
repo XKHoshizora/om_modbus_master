@@ -40,9 +40,12 @@ def state_callback(msg):
 
 def wait():
     rospy.sleep(0.03)
-    rospy.spinOnce()
-    while gState_driver == 1:
-        rospy.spinOnce()
+    start_time = rospy.get_time()
+    while gState_driver == 1 and not rospy.is_shutdown():
+        rospy.sleep(0.01)  # Short sleep to prevent CPU hogging
+        if rospy.get_time() - start_time > 5.0:  # 5 seconds timeout
+            rospy.logwarn("Timeout waiting for driver state to change")
+            break
 
 def init(pub):
     msg = om_query()
@@ -55,37 +58,13 @@ def init(pub):
     pub.publish(msg)
     wait()
 
-def main():
-    rospy.init_node('om_ros_node')
-    pub = rospy.Publisher('om_query1', om_query, queue_size=1)
-    rospy.Subscriber('om_response1', om_response, res_callback)
-    rospy.Subscriber('om_state1', om_state, state_callback)
-
-    odom_pub = rospy.Publisher('odom', Odometry, queue_size=50)
-    odom_broadcaster = tf.TransformBroadcaster()
-    rospy.Subscriber('cmd_vel', Twist, message_cb)
-
-    rospy.sleep(1.0)
-    init(pub)
+def main_loop(pub, odom_pub, odom_broadcaster):
     rate = rospy.Rate(20)
-
-    print("START")
-
-    msg = om_query()
-    msg.slave_id = 0x01
-    msg.func_code = 1
-    msg.write_addr = 4864
-    msg.write_num = 32
-    msg.data = [0] * 64  # Initialize with 64 zeros
-    msg.data[:32] = [1069, 1070, 1071] + [0] * 13 + [993, 994, 995, 996] + [0] * 12
-    pub.publish(msg)
-    wait()
-
-    rate.sleep()
-
+    
     while not rospy.is_shutdown():
         current_time = rospy.Time.now()
 
+        msg = om_query()
         msg.slave_id = 0x01
         msg.func_code = 2
         msg.read_addr = 4928
@@ -126,6 +105,37 @@ def main():
         wait()
         rate.sleep()
 
+def main():
+    rospy.init_node('om_ros_node', anonymous=True)
+    pub = rospy.Publisher('om_query1', om_query, queue_size=1)
+    rospy.Subscriber('om_response1', om_response, res_callback)
+    rospy.Subscriber('om_state1', om_state, state_callback)
+
+    odom_pub = rospy.Publisher('odom', Odometry, queue_size=50)
+    odom_broadcaster = tf.TransformBroadcaster()
+    rospy.Subscriber('cmd_vel', Twist, message_cb)
+
+    rospy.sleep(1.0)
+    init(pub)
+
+    print("START")
+
+    # Initial setup
+    msg = om_query()
+    msg.slave_id = 0x01
+    msg.func_code = 1
+    msg.write_addr = 4864
+    msg.write_num = 32
+    msg.data = [0] * 64  # Initialize with 64 zeros
+    msg.data[:32] = [1069, 1070, 1071] + [0] * 13 + [993, 994, 995, 996] + [0] * 12
+    pub.publish(msg)
+    wait()
+
+    # Start the main loop in a separate thread
+    import threading
+    threading.Thread(target=main_loop, args=(pub, odom_pub, odom_broadcaster), daemon=True).start()
+
+    # Use rospy.spin() to keep the main thread alive
     rospy.spin()
 
 if __name__ == '__main__':
