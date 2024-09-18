@@ -22,9 +22,9 @@ int gState_mes =
     0; /* メッセージ(0:メッセージなし,1:メッセージ到達,2:メッセージエラー) */
 int gState_error = 0; /* エラー(0:エラーなし,1:無応答,2:例外応答) */
 
-double x_spd = 0.0;
-double y_spd = 0.0;
-double z_ang = 0.0;
+double x_spd = 0.0; /* 前後並進速度(Vx) [mm/s] */
+double y_spd = 0.0; /* 角速度(ω) [rad/s] */
+double z_ang = 0.0; /* 左右並進速度(Vy) [mm/s] */
 double odm_x = 0.0;
 double odm_y = 0.0;
 double odm_th = 0.0;
