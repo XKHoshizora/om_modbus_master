@@ -149,6 +149,10 @@ add_executable(om_ros_node
     sample/cpp/MobiCon/om_changer.cpp
 )
 
+add_executable(amr_ros_node
+    src/amr_ros_node.cpp
+)
+
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries
 ## either from message generation or dynamic reconfigure
@@ -159,6 +163,11 @@ add_dependencies(om_modbusRTU_node
 )
 
 add_dependencies(om_ros_node
+    ${${PROJECT_NAME}_EXPORTED_TARGETS}
+    ${catkin_EXPORTED_TARGETS}
+)
+
+add_dependencies(amr_ros_node
     ${${PROJECT_NAME}_EXPORTED_TARGETS}
     ${catkin_EXPORTED_TARGETS}
 )
@@ -184,6 +193,10 @@ target_link_libraries(om_modbusRTU_node
 )
 
 target_link_libraries(om_ros_node
+    ${catkin_LIBRARIES}
+)
+
+target_link_libraries(amr_ros_node
     ${catkin_LIBRARIES}
 )
 
