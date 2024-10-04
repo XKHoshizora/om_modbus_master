@@ -198,10 +198,9 @@ int main(int argc, char** argv) {
         odom_trans.header.frame_id = "odom";
         odom_trans.child_frame_id = "base_footprint";
         
-        // 使用 tf2::convert 进行转换
+        // 正确转换 tf2::Transform 到 geometry_msgs::Transform
         tf2::convert(odom_tf, odom_trans.transform);
 
-        // 发送变换，不需要检查返回值
         odom_broadcaster.sendTransform(odom_trans);
 
         nav_msgs::Odometry odom;
@@ -209,8 +208,11 @@ int main(int argc, char** argv) {
         odom.header.frame_id = "odom";
         odom.child_frame_id = "base_footprint";
 
-        // 使用 tf2::convert 进行转换
-        tf2::convert(odom_tf, odom.pose.pose);
+        // 正确设置 geometry_msgs::Pose
+        odom.pose.pose.position.x = odom_tf.getOrigin().x();
+        odom.pose.pose.position.y = odom_tf.getOrigin().y();
+        odom.pose.pose.position.z = odom_tf.getOrigin().z();
+        tf2::convert(odom_tf.getRotation(), odom.pose.pose.orientation);
 
         {
             std::lock_guard<std::mutex> lock(odom_mutex);
@@ -221,7 +223,6 @@ int main(int argc, char** argv) {
 
         odom_pub.publish(odom);
 
-        // 使用 ROS_INFO_THROTTLE 进行日志输出
         ROS_INFO_THROTTLE(1, "Current position: x=%f, y=%f, theta=%f", odm_x, odm_y, odm_th);
 
         wait();
