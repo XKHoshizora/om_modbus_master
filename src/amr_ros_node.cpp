@@ -184,7 +184,6 @@ int main(int argc, char** argv) {
         }
         pub.publish(msg);
 
-        // MODIFIED: Use tf2::Transform for better management
         tf2::Transform odom_tf;
         tf2::Quaternion q;
         {
@@ -194,26 +193,23 @@ int main(int argc, char** argv) {
             odom_tf.setRotation(q);
         }
 
-        // MODIFIED: Use tf2::TimePoint for consistent timestamps
-        tf2::TimePoint transform_time = tf2_ros::fromMsg(current_time);
-
         geometry_msgs::TransformStamped odom_trans;
-        odom_trans.header.stamp = tf2_ros::toMsg(transform_time);
+        odom_trans.header.stamp = current_time;
         odom_trans.header.frame_id = "odom";
         odom_trans.child_frame_id = "base_footprint";
+        
+        // 使用 tf2::convert 进行转换
         tf2::convert(odom_tf, odom_trans.transform);
 
-        // ADDED: Error handling for transform broadcast
-        if (!odom_broadcaster.sendTransform(odom_trans)) {
-            ROS_WARN("Failed to send odom transform");
-        }
+        // 发送变换，不需要检查返回值
+        odom_broadcaster.sendTransform(odom_trans);
 
         nav_msgs::Odometry odom;
-        odom.header.stamp = tf2_ros::toMsg(transform_time);
+        odom.header.stamp = current_time;
         odom.header.frame_id = "odom";
         odom.child_frame_id = "base_footprint";
 
-        // MODIFIED: Use tf2::convert for consistency
+        // 使用 tf2::convert 进行转换
         tf2::convert(odom_tf, odom.pose.pose);
 
         {
@@ -225,7 +221,7 @@ int main(int argc, char** argv) {
 
         odom_pub.publish(odom);
 
-        // ADDED: Logging for debugging
+        // 使用 ROS_INFO_THROTTLE 进行日志输出
         ROS_INFO_THROTTLE(1, "Current position: x=%f, y=%f, theta=%f", odm_x, odm_y, odm_th);
 
         wait();
