@@ -17,6 +17,7 @@ find_package(catkin REQUIRED COMPONENTS
     tf2
     tf2_ros
     nav_msgs
+    sensor_msgs
 )
 
 ## System dependencies are found with CMake's conventions
@@ -149,8 +150,8 @@ add_executable(om_ros_node
     sample/cpp/MobiCon/om_changer.cpp
 )
 
-add_executable(amr_ros_node
-    src/amr_ros_node.cpp
+add_executable(amr_imu_publisher
+    src/amr_imu_publisher.cpp
 )
 
 ## Add cmake target dependencies of the library
@@ -167,7 +168,7 @@ add_dependencies(om_ros_node
     ${catkin_EXPORTED_TARGETS}
 )
 
-add_dependencies(amr_ros_node
+add_dependencies(amr_imu_publisher
     ${${PROJECT_NAME}_EXPORTED_TARGETS}
     ${catkin_EXPORTED_TARGETS}
 )
@@ -196,7 +197,7 @@ target_link_libraries(om_ros_node
     ${catkin_LIBRARIES}
 )
 
-target_link_libraries(amr_ros_node
+target_link_libraries(amr_imu_publisher
     ${catkin_LIBRARIES}
 )
 
