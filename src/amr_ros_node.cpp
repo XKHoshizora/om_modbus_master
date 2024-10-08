@@ -148,19 +148,43 @@ int main(int argc, char** argv) {
     printf("START\n");
 
     /* 間接参照にアドレスを設定します。 */
-    msg.slave_id = 0x01;
-    msg.func_code = 1;
-    msg.write_addr = 4864;
-    msg.write_num = 32;
-    msg.data[0] = 1069;
-    msg.data[1] = 1070;
-    msg.data[2] = 1071;
-    // ... (省略) ...
-    msg.data[16] = 993;
-    msg.data[17] = 994;
-    msg.data[18] = 995;
-    msg.data[19] = 996;
-    // ... (省略) ...
+    msg.slave_id = 0x01; /* 号機選択(Hex): 1 */
+    msg.func_code = 1;   /* ファンクションコード選択: 1(Write) */
+    msg.write_addr =
+        4864; /* 先頭アドレス選択(Dec): 間接参照（0）アドレス設定 (1300h)*/
+    msg.write_num = 32; /* 書き込みデータサイズ: 32(8x32bit) */
+    msg.data[0] = 1069; /* モニタ値 現在位置(検出)X */
+    msg.data[1] = 1070; /* モニタ値 現在位置(検出)Y */
+    msg.data[2] = 1071; /* モニタ値 現在位置(検出)θ */
+    msg.data[3] = 0;
+    msg.data[4] = 0;
+    msg.data[5] = 0;
+    msg.data[6] = 0;
+    msg.data[7] = 0;
+    msg.data[8] = 0;
+    msg.data[9] = 0;
+    msg.data[10] = 0;
+    msg.data[11] = 0;
+    msg.data[12] = 0;
+    msg.data[13] = 0;
+    msg.data[14] = 0;
+    msg.data[15] = 0;
+    msg.data[16] = 993; /* ダイレクトデータ運転 運転方式 */
+    msg.data[17] = 994; /* ダイレクトデータ運転 前後並進速度(Vx) */
+    msg.data[18] = 995; /* ダイレクトデータ運転 角速度(ω) */
+    msg.data[19] = 996; /* ダイレクトデータ運転 左右並進速度(Vy) */
+    msg.data[20] = 0;
+    msg.data[21] = 0;
+    msg.data[22] = 0;
+    msg.data[23] = 0;
+    msg.data[24] = 0;
+    msg.data[25] = 0;
+    msg.data[26] = 0;
+    msg.data[27] = 0;
+    msg.data[28] = 0;
+    msg.data[29] = 0;
+    msg.data[30] = 0;
+    msg.data[31] = 0;
 
     pub.publish(msg);
     wait();

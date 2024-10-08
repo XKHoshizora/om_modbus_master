@@ -3,11 +3,6 @@
 #include <om_modbus_master/om_query.h>  // Modbus 查询消息类型
 #include <om_modbus_master/om_response.h>  // Modbus 响应消息类型
 #include <om_modbus_master/om_state.h>  // Modbus 状态消息类型
-#include <tf2_ros/transform_broadcaster.h>  // 发布TF
-#include <tf2_ros/static_transform_broadcaster.h>
-#include <tf2/LinearMath/Quaternion.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // TF转换
-
 #include <mutex>  // 互斥锁保护共享资源
 
 // 全局变量，用于存储从 IMU 获取的加速度和角速度数据
@@ -26,19 +21,19 @@ int gState_error = 0;
 // Modbus 响应回调函数：处理 Modbus 响应，提取 IMU 数据
 void resCallback(const om_modbus_master::om_response::ConstPtr& res) {
     std::lock_guard<std::mutex> lock(imu_mutex);  // 使用互斥锁保护共享变量
-    if (res->rx.size() >= 6) {
+    if (res->data.size() >= 6) {
         // 从 Modbus 响应中提取加速度和角速度数据
-        imu_acc_x = res->rx[0] * 0.001;  // 假设寄存器中的加速度数据需要乘以 0.001
-        imu_acc_y = res->rx[1] * 0.001;
-        imu_acc_z = res->rx[2] * 0.001;
-        imu_gyro_x = res->rx[3] * 0.0001;  // 假设寄存器中的角速度数据需要乘以 0.0001
-        imu_gyro_y = res->rx[4] * 0.0001;
-        imu_gyro_z = res->rx[5] * 0.0001;
+        imu_acc_x = res->data[3] * 1000;  // 假设寄存器中的加速度数据需要乘以 0.001
+        imu_acc_y = res->data[4] * 1000;
+        imu_acc_z = res->data[5] * 1000;
+        imu_gyro_x = res->data[6] * 100000;  // 假设寄存器中的角速度数据需要乘以 0.0001
+        imu_gyro_y = res->data[7] * 100000;
+        imu_gyro_z = res->data[8] * 100000;
 
         // 创建 ROS IMU 消息并发布
         sensor_msgs::Imu imu_msg;
         imu_msg.header.stamp = ros::Time::now();  // 使用当前时间戳
-        imu_msg.header.frame_id = "imu_link";     // IMU 的参考坐标系
+        imu_msg.header.frame_id = "imu";  // IMU 的参考坐标系，与 URDF 文件中的 link 名称一致
 
         // 设置加速度数据
         imu_msg.linear_acceleration.x = imu_acc_x;
@@ -105,27 +100,22 @@ int main(int argc, char** argv) {
     om_modbus_master::om_query query_msg;
     init(query_msg, pub_query);
 
-    // 发布静态TF（假设IMU是固定安装的）
-    tf2_ros::StaticTransformBroadcaster static_broadcaster;
-    geometry_msgs::TransformStamped static_transformStamped;
-    static_transformStamped.header.stamp = ros::Time::now();
-    static_transformStamped.header.frame_id = "base_link";  // 机器人底盘坐标系
-    static_transformStamped.child_frame_id = "imu_link";  // IMU的坐标系
-    static_transformStamped.transform.translation.x = 0.0;
-    static_transformStamped.transform.translation.y = 0.0;
-    static_transformStamped.transform.translation.z = 0.1;  // 假设IMU安装在0.1米高度处
-    static_transformStamped.transform.rotation.w = 1.0;  // 无旋转
-    static_broadcaster.sendTransform(static_transformStamped);
-
     ros::Rate loop_rate(update_rate);
-    
+
     // 主循环
     while (ros::ok()) {
         // 每隔固定的时间发送Modbus查询请求以获取IMU数据
-        query_msg.slave_id = 1;  // IMU设备的Modbus从机ID
-        query_msg.function_code = 3;  // 读取保持寄存器的功能码
-        query_msg.start_address = 100;  // 假设IMU数据的寄存器起始地址为100
-        query_msg.num_regs = 6;  // 读取6个寄存器（3个用于加速度，3个用于角速度）
+        query_msg.slave_id = 0x01;  // IMU设备的Modbus从机ID
+        query_msg.func_code = 3;  // 读取保持寄存器的功能码
+        query_msg.read_addr = 4928;  // 假设IMU数据的寄存器起始地址为100
+        query_msg.read_num = 6;  // 读取6个寄存器（3个用于加速度，3个用于角速度）
+        query_msg.data[3] = 1038;
+        query_msg.data[4] = 1039;
+        query_msg.data[5] = 1040;
+        query_msg.data[6] = 1041;
+        query_msg.data[7] = 1042;
+        query_msg.data[8] = 1043;
+
         pub_query.publish(query_msg);  // 发送查询请求
 
         // 处理ROS的回调函数并等待下一次循环
