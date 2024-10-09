@@ -150,8 +150,8 @@ add_executable(om_ros_node
     sample/cpp/MobiCon/om_changer.cpp
 )
 
-add_executable(amr_imu_publisher
-    src/amr_imu_publisher.cpp
+add_executable(amr_imu_node
+    src/amr_imu_node.cpp
 )
 
 ## Add cmake target dependencies of the library
@@ -168,7 +168,7 @@ add_dependencies(om_ros_node
     ${catkin_EXPORTED_TARGETS}
 )
 
-add_dependencies(amr_imu_publisher
+add_dependencies(amr_imu_node
     ${${PROJECT_NAME}_EXPORTED_TARGETS}
     ${catkin_EXPORTED_TARGETS}
 )
@@ -197,7 +197,7 @@ target_link_libraries(om_ros_node
     ${catkin_LIBRARIES}
 )
 
-target_link_libraries(amr_imu_publisher
+target_link_libraries(amr_imu_node
     ${catkin_LIBRARIES}
 )
 
