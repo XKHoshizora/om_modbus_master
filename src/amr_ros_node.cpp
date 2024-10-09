@@ -117,8 +117,8 @@ int main(int argc, char** argv) {
 
     // ADDED: Get parameters from parameter server
     double update_rate;
-    n.param("update_rate", update_rate, 20.0);
-    n.param("robot_base_height", ROBOT_BASE_HEIGHT, 0.1);
+    n.param("update_rate", update_rate, 20.0); // 里程计数据的更新和发布频率,默认为20Hz。
+    n.param("robot_base_height", ROBOT_BASE_HEIGHT, 0.2); // 表示 "base_link" 相对于 "base_footprint" 在垂直方向上的偏移,如果没有设置则使用默认值0.1。
 
     ros::Publisher pub = n.advertise<om_modbus_master::om_query>("om_query1", 1);
     ros::Subscriber sub1 = n.subscribe("om_response1", 1, resCallback);
@@ -150,8 +150,7 @@ int main(int argc, char** argv) {
     /* 間接参照にアドレスを設定します。 */
     msg.slave_id = 0x01; /* 号機選択(Hex): 1 */
     msg.func_code = 1;   /* ファンクションコード選択: 1(Write) */
-    msg.write_addr =
-        4864; /* 先頭アドレス選択(Dec): 間接参照（0）アドレス設定 (1300h)*/
+    msg.write_addr = 4864; /* 先頭アドレス選択(Dec): 間接参照（0）アドレス設定 (1300h)*/
     msg.write_num = 32; /* 書き込みデータサイズ: 32(8x32bit) */
     msg.data[0] = 1069; /* モニタ値 現在位置(検出)X */
     msg.data[1] = 1070; /* モニタ値 現在位置(検出)Y */
