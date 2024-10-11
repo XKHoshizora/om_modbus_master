@@ -136,15 +136,6 @@ int main(int argc, char** argv) {
     init(msg, pub);
     ros::Rate loop_rate(update_rate);
 
-    // ADDED: Publish static transform from base_footprint to base_link
-    geometry_msgs::TransformStamped static_transformStamped;
-    static_transformStamped.header.stamp = ros::Time::now();
-    static_transformStamped.header.frame_id = "base_footprint";
-    static_transformStamped.child_frame_id = "base_link";
-    static_transformStamped.transform.translation.z = ROBOT_BASE_HEIGHT;
-    static_transformStamped.transform.rotation.w = 1.0;  // No rotation
-    static_broadcaster.sendTransform(static_transformStamped);
-
     printf("START\n");
 
     /* 間接参照にアドレスを設定します。 */
