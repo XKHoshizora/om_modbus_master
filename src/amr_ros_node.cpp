@@ -132,6 +132,21 @@ int main(int argc, char** argv) {
 
     om_modbus_master::om_query msg;
 
+    // Broadcasting the static transform between base_footprint and base_link
+    geometry_msgs::TransformStamped base_to_link;
+    base_to_link.header.stamp = ros::Time::now();
+    base_to_link.header.frame_id = "base_footprint";
+    base_to_link.child_frame_id = "base_link";
+    base_to_link.transform.translation.x = 0.0;
+    base_to_link.transform.translation.y = 0.0;
+    base_to_link.transform.translation.z = ROBOT_BASE_HEIGHT;
+
+    tf2::Quaternion q;
+    q.setRPY(0, 0, 0);  // 无旋转
+    base_to_link.transform.rotation = tf2::toMsg(q);
+
+    static_broadcaster.sendTransform(base_to_link);
+
     ros::Duration(1.0).sleep();
     init(msg, pub);
     ros::Rate loop_rate(update_rate);
