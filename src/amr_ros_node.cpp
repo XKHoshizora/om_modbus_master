@@ -117,7 +117,7 @@ int main(int argc, char** argv) {
 
     // ADDED: Get parameters from parameter server
     double update_rate;
-    n.param("update_rate", update_rate, 20.0); // 里程计数据的更新和发布频率,默认为20Hz。
+    n.param("update_rate", update_rate, 10.0); // 里程计数据的更新和发布频率,默认为20Hz。
     n.param("robot_base_height", ROBOT_BASE_HEIGHT, 0.2); // 表示 "base_link" 相对于 "base_footprint" 在垂直方向上的偏移,如果没有设置则使用默认值0.1。
 
     ros::Publisher pub = n.advertise<om_modbus_master::om_query>("om_query1", 1);
