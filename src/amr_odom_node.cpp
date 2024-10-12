@@ -34,7 +34,7 @@ double odm_x = 0.0; // X方向位置 [m]
 double odm_y = 0.0; // Y方向位置 [m]
 double odm_th = 0.0; // 偏航角 [rad]
 
-double ROBOT_BASE_HEIGHT; // 机器人基座高度 [m]
+double ROBOT_BASE_HEIGHT = 0.02; // 机器人基座高度 [m]
 
 /**
  * @brief 处理接收到的速度命令
@@ -103,7 +103,6 @@ int main(int argc, char** argv) {
     // 从参数服务器获取参数
     double update_rate;
     n.param("update_rate", update_rate, 10.0);  // 默认更新率为10Hz
-    n.param("robot_base_height", ROBOT_BASE_HEIGHT, 0.2);  // 默认基座高度为0.2m
 
     // 创建发布者和订阅者
     ros::Publisher pub = n.advertise<om_modbus_master::om_query>("om_query1", 1);
