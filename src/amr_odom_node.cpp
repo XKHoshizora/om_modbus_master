@@ -34,8 +34,6 @@ double odm_x = 0.0; // X方向位置 [m]
 double odm_y = 0.0; // Y方向位置 [m]
 double odm_th = 0.0; // 偏航角 [rad]
 
-double ROBOT_BASE_HEIGHT = 0.02; // 机器人基座高度 [m]
-
 /**
  * @brief 处理接收到的速度命令
  * @param twist 接收到的Twist消息
@@ -103,6 +101,7 @@ int main(int argc, char** argv) {
     // 从参数服务器获取参数
     double update_rate;
     n.param("update_rate", update_rate, 10.0);  // 默认更新率为10Hz
+    n.param("robot_base_height", ROBOT_BASE_HEIGHT, 0.2); // 表示 "base_link" 相对于 "base_footprint" 在垂直方向上的偏（移机器人基座高度 [m]）,如果没有设置则使用默认值0.2。
 
     // 创建发布者和订阅者
     ros::Publisher pub = n.advertise<om_modbus_master::om_query>("om_query1", 1);
@@ -120,10 +119,14 @@ int main(int argc, char** argv) {
     base_to_link.header.stamp = ros::Time::now();
     base_to_link.header.frame_id = "base_footprint";
     base_to_link.child_frame_id = "base_link";
+    base_to_link.transform.translation.x = 0.0;
+    base_to_link.transform.translation.y = 0.0;
     base_to_link.transform.translation.z = ROBOT_BASE_HEIGHT;
+    
     tf2::Quaternion q;
     q.setRPY(0, 0, 0);
     base_to_link.transform.rotation = tf2::toMsg(q);
+    
     static_broadcaster.sendTransform(base_to_link);
 
     ros::Duration(1.0).sleep();
@@ -183,6 +186,7 @@ int main(int argc, char** argv) {
         odom_trans.header.stamp = current_time;
         odom_trans.header.frame_id = "odom";
         odom_trans.child_frame_id = "base_footprint";
+        
         tf2::convert(odom_tf, odom_trans.transform);
         odom_broadcaster.sendTransform(odom_trans);
 
