@@ -34,6 +34,8 @@ double odm_x = 0.0; // X方向位置 [m]
 double odm_y = 0.0; // Y方向位置 [m]
 double odm_th = 0.0; // 偏航角 [rad]
 
+double ROBOT_BASE_HEIGHT; // 声明为全局变量
+
 /**
  * @brief 处理接收到的速度命令
  * @param twist 接收到的Twist消息
