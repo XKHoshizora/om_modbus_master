@@ -151,7 +151,11 @@ add_executable(om_ros_node
 )
 
 add_executable(amr_ros_node
-    sample/cpp/MobiCon/om_changer.cpp
+    src/amr_ros_node.cpp
+)
+
+add_executable(amr_odom_node
+    src/amr_odom_node.cpp
 )
 
 ## Add cmake target dependencies of the library
@@ -169,6 +173,11 @@ add_dependencies(om_ros_node
 )
 
 add_dependencies(amr_ros_node
+    ${${PROJECT_NAME}_EXPORTED_TARGETS}
+    ${catkin_EXPORTED_TARGETS}
+)
+
+add_dependencies(amr_odom_node
     ${${PROJECT_NAME}_EXPORTED_TARGETS}
     ${catkin_EXPORTED_TARGETS}
 )
@@ -198,6 +207,10 @@ target_link_libraries(om_ros_node
 )
 
 target_link_libraries(amr_ros_node
+    ${catkin_LIBRARIES}
+)
+
+target_link_libraries(amr_odom_node
     ${catkin_LIBRARIES}
 )
 
