@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
         {
             std::lock_guard<std::mutex> lock(odom_mutex);
             odom_tf.setOrigin(tf2::Vector3(odm_x, odm_y, 0.0));
-            q.setRPY(0, 0, odm_th);
+            q.setRPY(0, 0, -odm_th);
             odom_tf.setRotation(q);
         }
 
