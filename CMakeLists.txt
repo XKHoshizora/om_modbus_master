@@ -154,8 +154,12 @@ add_executable(amr_ros_node
     src/amr_ros_node.cpp
 )
 
-add_executable(amr_odom_node
-    src/amr_odom_node.cpp
+add_executable(amr_odom_to_ros
+    src/amr_odom_to_ros.cpp
+)
+
+add_executable(cmd_vel_to_amr
+    src/cmd_vel_to_amr.cpp
 )
 
 ## Add cmake target dependencies of the library
@@ -177,7 +181,12 @@ add_dependencies(amr_ros_node
     ${catkin_EXPORTED_TARGETS}
 )
 
-add_dependencies(amr_odom_node
+add_dependencies(amr_odom_to_ros
+    ${${PROJECT_NAME}_EXPORTED_TARGETS}
+    ${catkin_EXPORTED_TARGETS}
+)
+
+add_dependencies(cmd_vel_to_amr
     ${${PROJECT_NAME}_EXPORTED_TARGETS}
     ${catkin_EXPORTED_TARGETS}
 )
@@ -210,7 +219,11 @@ target_link_libraries(amr_ros_node
     ${catkin_LIBRARIES}
 )
 
-target_link_libraries(amr_odom_node
+target_link_libraries(amr_odom_to_ros
+    ${catkin_LIBRARIES}
+)
+
+target_link_libraries(cmd_vel_to_amr
     ${catkin_LIBRARIES}
 )
 

@@ -1,10 +1,11 @@
-/** @file    om_changer.cpp
- *  @brief   ROS节点，用于处理机器人的里程计数据并发布TF变换
+/**
+ * @file    amr_odom_to_ros.cpp
+ * @brief   ROS节点，用于将AMR的里程计数据转换为ROS消息并发布TF变换
  *
- *  @details 该节点主要完成以下任务：
- *           1. 接收cmd_vel命令并将其写入到Modbus设备
- *           2. 从Modbus设备读取里程计数据
- *           3. 发布里程计数据（odom话题和TF变换）
+ * @details 该节点主要完成以下任务：
+ *          1. 从Modbus设备读取AMR的里程计数据
+ *          2. 将里程计数据转换为ROS的Odometry消息
+ *          3. 发布里程计数据（odom话题和TF变换）
  */
 
 #include "ros/ros.h"
@@ -12,10 +13,8 @@
 #include "om_modbus_master/om_response.h"
 #include "om_modbus_master/om_state.h"
 
-#include <geometry_msgs/Twist.h>
 #include <nav_msgs/Odometry.h>
 #include <tf2_ros/transform_broadcaster.h>
-#include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
@@ -27,28 +26,12 @@ int gState_mes = 0;    // 消息状态（0:无消息，1:消息到达，2:消息
 int gState_error = 0;  // 错误状态（0:无错误，1:无响应，2:异常响应）
 
 std::mutex odom_mutex;
-double x_spd = 0.0; // X方向速度 [mm/s]
-double y_spd = 0.0; // Y方向速度 [mm/s]
-double z_ang = 0.0; // 角速度 [rad/s]
 double odm_x = 0.0; // X方向位置 [m]
 double odm_y = 0.0; // Y方向位置 [m]
 double odm_th = 0.0; // 偏航角 [rad]
 
-// double ROBOT_BASE_HEIGHT; // 声明为全局变量
-
 /**
- * @brief 处理接收到的速度命令
- * @param twist 接收到的Twist消息
- */
-void messageCb(const geometry_msgs::Twist& twist) {
-    std::lock_guard<std::mutex> lock(odom_mutex);
-    x_spd = int(twist.linear.x * 1000.0);  // 转换为mm/s
-    y_spd = int(twist.linear.y * 1000.0);  // 转换为mm/s
-    z_ang = int(twist.angular.z * 1000000.0);  // 转换为μrad/s
-}
-
-/**
- * @brief 处理从Modbus设备接收到的响应
+ * @brief 处理从Modbus设备接收到的里程计响应
  * @param msg 接收到的响应消息
  */
 void resCallback(const om_modbus_master::om_response msg) {
@@ -97,13 +80,12 @@ void init(om_modbus_master::om_query msg, ros::Publisher pub) {
 }
 
 int main(int argc, char** argv) {
-    ros::init(argc, argv, "om_ros_node");
+    ros::init(argc, argv, "amr_odom_to_ros");
     ros::NodeHandle n;
 
     // 从参数服务器获取参数
     double update_rate;
     n.param("update_rate", update_rate, 10.0);  // 默认更新率为10Hz
-    // n.param("robot_base_height", ROBOT_BASE_HEIGHT, 0.2); // 表示 "base_link" 相对于 "base_footprint" 在垂直方向上的偏（移机器人基座高度 [m]）,如果没有设置则使用默认值0.2。
 
     // 创建发布者和订阅者
     ros::Publisher pub = n.advertise<om_modbus_master::om_query>("om_query1", 1);
@@ -111,31 +93,14 @@ int main(int argc, char** argv) {
     ros::Subscriber sub2 = n.subscribe("om_state1", 1, stateCallback);
     ros::Publisher odom_pub = n.advertise<nav_msgs::Odometry>("odom", 50);
     tf2_ros::TransformBroadcaster odom_broadcaster;
-    // tf2_ros::StaticTransformBroadcaster static_broadcaster;
-    ros::Subscriber sub = n.subscribe("cmd_vel", 1, &messageCb);
 
     om_modbus_master::om_query msg;
-
-    // 发布base_footprint到base_link的静态变换
-    // geometry_msgs::TransformStamped base_to_link;
-    // base_to_link.header.stamp = ros::Time::now();
-    // base_to_link.header.frame_id = "base_footprint";
-    // base_to_link.child_frame_id = "base_link";
-    // base_to_link.transform.translation.x = 0.0;
-    // base_to_link.transform.translation.y = 0.0;
-    // base_to_link.transform.translation.z = ROBOT_BASE_HEIGHT;
-    
-    // tf2::Quaternion q;
-    // q.setRPY(0, 0, 0);
-    // base_to_link.transform.rotation = tf2::toMsg(q);
-    
-    // static_broadcaster.sendTransform(base_to_link);
 
     ros::Duration(1.0).sleep();
     init(msg, pub);
     ros::Rate loop_rate(update_rate);
 
-    ROS_INFO("Odom Node Start");
+    ROS_INFO("Odom to ROS Node Start");
 
     // 设置间接引用地址
     msg.slave_id = 0x01;
@@ -161,20 +126,13 @@ int main(int argc, char** argv) {
     while (ros::ok()) {
         ros::Time current_time = ros::Time::now();
 
-        // 写入速度命令并读取里程计数据
+        // 读取里程计数据
         msg.slave_id = 0x01;
         msg.func_code = 2;
         msg.read_addr = 4928;
         msg.read_num = 3;
-        msg.write_addr = 4960;
-        msg.write_num = 4;
-        {
-            std::lock_guard<std::mutex> lock(odom_mutex);
-            msg.data[0] = 1;
-            msg.data[1] = x_spd;
-            msg.data[2] = z_ang;
-            msg.data[3] = y_spd;
-        }
+        msg.write_addr = 0;  // 不写入数据
+        msg.write_num = 0;   // 不写入数据
         pub.publish(msg);
 
         // 创建并发布odom到base_footprint的TF变换
@@ -205,16 +163,14 @@ int main(int argc, char** argv) {
         odom.pose.pose.position.z = odom_tf.getOrigin().z();
         tf2::convert(odom_tf.getRotation(), odom.pose.pose.orientation);
 
-        {
-            std::lock_guard<std::mutex> lock(odom_mutex);
-            odom.twist.twist.linear.x = x_spd / 1000.0;
-            odom.twist.twist.linear.y = y_spd / 1000.0;
-            odom.twist.twist.angular.z = z_ang / 1000000.0;
-        }
+        // 注意：这里我们不设置twist，因为我们不直接接收速度信息
+        odom.twist.twist.linear.x = 0;
+        odom.twist.twist.linear.y = 0;
+        odom.twist.twist.angular.z = 0;
 
         odom_pub.publish(odom);
 
-        ROS_INFO_THROTTLE(1, "Current position: x=%f, y=%f, theta=%f", odm_x, odm_y, odm_th);
+        ROS_INFO_THROTTLE(1, "AMR Current position: x=%f, y=%f, theta=%f", odm_x, odm_y, odm_th);
 
         wait();
 
