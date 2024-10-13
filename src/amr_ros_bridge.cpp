@@ -54,7 +54,7 @@ void resCallback(const om_modbus_master::om_response msg) {
         std::lock_guard<std::mutex> lock(odom_mutex);
         odm_x = msg.data[0] / 1000.0;  // 转换为m
         odm_y = msg.data[1] / 1000.0;  // 转换为m
-        odm_th = -msg.data[2] / 1000000.0;  // 转换为rad
+        odm_th = msg.data[2] / 1000000.0;  // 转换为rad
     }
 }
 
