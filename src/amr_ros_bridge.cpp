@@ -123,12 +123,12 @@ int main(int argc, char** argv) {
     msg.func_code = 1;
     msg.write_addr = 4864;
     msg.write_num = 32;
-    // msg.data[0] = 1069;  // 里程计X
-    // msg.data[1] = 1070;  // 里程计Y
-    // msg.data[2] = 1071;  // 里程计Theta
-    msg.data[0] = 1032;  // 陀螺仪融合里程计X
-    msg.data[1] = 1033;  // 陀螺仪融合里程计Y
-    msg.data[2] = 1037;  // 陀螺仪融合里程计YAW
+    msg.data[0] = 1069;  // 里程计X
+    msg.data[1] = 1070;  // 里程计Y
+    msg.data[2] = 1071;  // 里程计Theta
+    // msg.data[0] = 1032;  // 陀螺仪融合里程计X
+    // msg.data[1] = 1033;  // 陀螺仪融合里程计Y
+    // msg.data[2] = 1037;  // 陀螺仪融合里程计YAW
     // ... 其他数据保持不变 ...
     msg.data[16] = 993;  // 直接数据运行模式
     msg.data[17] = 994;  // 前后平移速度(Vx)
