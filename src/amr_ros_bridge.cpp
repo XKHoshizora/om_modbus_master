@@ -42,7 +42,7 @@ void messageCb(const geometry_msgs::Twist& twist) {
     std::lock_guard<std::mutex> lock(odom_mutex);
     x_spd = int(twist.linear.x * 1000.0);  // 转换为mm/s
     y_spd = int(twist.linear.y * 1000.0);  // 转换为mm/s
-    z_ang = int(twist.angular.z * 1000000.0);  // 转换为μrad/s
+    z_ang = -int(twist.angular.z * 1000000.0);  // 转换为μrad/s
 }
 
 /**
@@ -54,7 +54,7 @@ void resCallback(const om_modbus_master::om_response msg) {
         std::lock_guard<std::mutex> lock(odom_mutex);
         odm_x = msg.data[0] / 1000.0;  // 转换为m
         odm_y = msg.data[1] / 1000.0;  // 转换为m
-        odm_th = msg.data[2] / 1000000.0;  // 转换为rad
+        odm_th = -msg.data[2] / 1000000.0;  // 转换为rad
     }
 }
 
@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
 
     // 从参数服务器获取参数
     double update_rate;
-    n.param("update_rate", update_rate, 10.0);  // 默认更新率为10Hz
+    n.param("update_rate", update_rate, 50.0);  // 默认更新率为10Hz
 
     // 创建发布者和订阅者
     ros::Publisher pub = n.advertise<om_modbus_master::om_query>("om_query1", 1);
@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
         {
             std::lock_guard<std::mutex> lock(odom_mutex);
             odom_tf.setOrigin(tf2::Vector3(odm_x, odm_y, 0.0));
-            q.setRPY(0, 0, -odm_th);
+            q.setRPY(0, 0, odm_th);
             odom_tf.setRotation(q);
         }
 
