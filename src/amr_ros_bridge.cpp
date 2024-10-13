@@ -42,7 +42,7 @@ void messageCb(const geometry_msgs::Twist& twist) {
     std::lock_guard<std::mutex> lock(odom_mutex);
     x_spd = int(twist.linear.x * 1000.0);  // 转换为mm/s
     y_spd = int(twist.linear.y * 1000.0);  // 转换为mm/s
-    z_ang = -int(twist.angular.z * 1000000.0);  // 转换为μrad/s
+    z_ang = int(twist.angular.z * 1000000.0);  // 转换为μrad/s
 }
 
 /**
