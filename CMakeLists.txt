@@ -150,14 +150,16 @@ add_executable(om_ros_node
     sample/cpp/MobiCon/om_changer.cpp
 )
 
-add_executable(amr_ros_node
-    src/amr_ros_node.cpp
+add_executable(amr_ros_bridge
+    src/amr_ros_bridge.cpp
 )
 
+# 从 amr_ros_bridge 中拆分出的里程计接收与发布节点
 add_executable(amr_odom_to_ros
     src/amr_odom_to_ros.cpp
 )
 
+# 从 amr_ros_bridge 中拆分出的 cmd_vel 接收与发送节点
 add_executable(cmd_vel_to_amr
     src/cmd_vel_to_amr.cpp
 )
@@ -176,7 +178,7 @@ add_dependencies(om_ros_node
     ${catkin_EXPORTED_TARGETS}
 )
 
-add_dependencies(amr_ros_node
+add_dependencies(amr_ros_bridge
     ${${PROJECT_NAME}_EXPORTED_TARGETS}
     ${catkin_EXPORTED_TARGETS}
 )
@@ -215,7 +217,7 @@ target_link_libraries(om_ros_node
     ${catkin_LIBRARIES}
 )
 
-target_link_libraries(amr_ros_node
+target_link_libraries(amr_ros_bridge
     ${catkin_LIBRARIES}
 )
 

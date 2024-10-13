@@ -1,6 +1,6 @@
 /**
  * @file    amr_odom_to_ros.cpp
- * @brief   ROS节点，用于将AMR的里程计数据转换为ROS消息并发布TF变换
+ * @brief   从 amr_ros_bridge 中拆分出的里程计接收与发布ROS节点，用于将AMR的里程计数据转换为ROS消息并发布TF变换
  *
  * @details 该节点主要完成以下任务：
  *          1. 从Modbus设备读取AMR的里程计数据

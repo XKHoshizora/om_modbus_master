@@ -1,6 +1,6 @@
 /**
  * @file    cmd_vel_to_amr.cpp
- * @brief   ROS节点,用于将cmd_vel命令转换并发送到AMR(自主移动机器人)
+ * @brief   从 amr_ros_bridge 中拆分出的 cmd_vel 接收与发送ROS节点,用于将cmd_vel命令转换并发送到AMR(自主移动机器人)
  *
  * @details 该节点主要完成以下任务:
  *          1. 订阅cmd_vel话题,接收速度命令
