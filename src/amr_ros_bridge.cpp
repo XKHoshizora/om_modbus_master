@@ -1,10 +1,11 @@
-/** @file    om_changer.cpp
- *  @brief   ROS节点，用于处理机器人的里程计数据并发布TF变换
+/** @file    amr_ros_bridge.cpp
+ *  @brief   ROS节点，用于处理机器人的里程计和IMU数据并发布TF变换
  *
  *  @details 该节点主要完成以下任务：
  *           1. 接收cmd_vel命令并将其写入到Modbus设备
- *           2. 从Modbus设备读取里程计数据
+ *           2. 从Modbus设备读取里程计和IMU数据
  *           3. 发布里程计数据（odom话题和TF变换）
+ *           4. 发布IMU数据（imu话题）
  */
 
 #include "ros/ros.h"
@@ -13,6 +14,7 @@
 #include "om_modbus_master/om_state.h"
 
 #include <geometry_msgs/Twist.h>
+#include <sensor_msgs/Imu.h>
 #include <nav_msgs/Odometry.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/static_transform_broadcaster.h>
@@ -27,12 +29,23 @@ int gState_mes = 0;    // 消息状态（0:无消息，1:消息到达，2:消息
 int gState_error = 0;  // 错误状态（0:无错误，1:无响应，2:异常响应）
 
 std::mutex odom_mutex;
+std::mutex imu_mutex;
+
+// 里程计数据
 double x_spd = 0.0; // X方向速度 [mm/s]
 double y_spd = 0.0; // Y方向速度 [mm/s]
 double z_ang = 0.0; // 角速度 [rad/s]
 double odm_x = 0.0; // X方向位置 [m]
 double odm_y = 0.0; // Y方向位置 [m]
 double odm_th = 0.0; // 偏航角 [rad]
+
+// IMU数据
+double imu_acc_x = 0.0;  // X方向加速度 [m/s^2]
+double imu_acc_y = 0.0;  // Y方向加速度 [m/s^2]
+double imu_acc_z = 0.0;  // Z方向加速度 [m/s^2]
+double imu_gyro_x = 0.0; // Roll角速度 [rad/s]
+double imu_gyro_y = 0.0; // Pitch角速度 [rad/s]
+double imu_gyro_z = 0.0; // Yaw角速度 [rad/s]
 
 /**
  * @brief 处理接收到的速度命令
@@ -51,10 +64,22 @@ void messageCb(const geometry_msgs::Twist& twist) {
  */
 void resCallback(const om_modbus_master::om_response msg) {
     if (msg.slave_id == 1) {
-        std::lock_guard<std::mutex> lock(odom_mutex);
-        odm_x = msg.data[0] / 1000.0;  // 转换为m
-        odm_y = msg.data[1] / 1000.0;  // 转换为m
-        odm_th = msg.data[2] / 1000000.0;  // 转换为rad
+        {
+            std::lock_guard<std::mutex> lock(odom_mutex);
+            odm_x = msg.data[0] / 1000.0;  // 转换为m
+            odm_y = msg.data[1] / 1000.0;  // 转换为m
+            odm_th = msg.data[2] / 1000000.0;  // 转换为rad
+        }
+        {
+            std::lock_guard<std::mutex> lock(imu_mutex);
+            // 转换IMU数据到正确的单位
+            imu_acc_x = msg.data[3] * 0.001;  // 转换为m/s^2
+            imu_acc_y = msg.data[4] * 0.001;  // 转换为m/s^2
+            imu_acc_z = msg.data[5] * 0.001;  // 转换为m/s^2
+            imu_gyro_x = msg.data[6] * 0.000001;  // 转换为rad/s
+            imu_gyro_y = msg.data[7] * 0.000001;  // 转换为rad/s
+            imu_gyro_z = msg.data[8] * 0.000001;  // 转换为rad/s
+        }
     }
 }
 
@@ -100,15 +125,22 @@ int main(int argc, char** argv) {
 
     // 从参数服务器获取参数
     double update_rate;
-    n.param("update_rate", update_rate, 50.0);  // 默认更新率为10Hz
+    n.param("update_rate", update_rate, 50.0);  // 默认更新率为20Hz
 
     // 创建发布者和订阅者
+    // om_modbus 相关
     ros::Publisher pub = n.advertise<om_modbus_master::om_query>("om_query1", 1);
     ros::Subscriber sub1 = n.subscribe("om_response1", 1, resCallback);
     ros::Subscriber sub2 = n.subscribe("om_state1", 1, stateCallback);
+    // 里程计相关
     ros::Publisher odom_pub = n.advertise<nav_msgs::Odometry>("odom", 50);
-    tf2_ros::TransformBroadcaster odom_broadcaster;
+    // IMU 相关
+    ros::Publisher imu_pub = n.advertise<sensor_msgs::Imu>("imu", 50);
+    // cmd_vel 相关
     ros::Subscriber sub = n.subscribe("cmd_vel", 1, &messageCb);
+
+    // 创建里程计 TF 转换广播器
+    tf2_ros::TransformBroadcaster odom_broadcaster;
 
     om_modbus_master::om_query msg;
 
@@ -116,19 +148,28 @@ int main(int argc, char** argv) {
     init(msg, pub);
     ros::Rate loop_rate(update_rate);
 
-    ROS_INFO("Odom Node Start");
+    ROS_INFO("AMR ROS Bridge Start");
 
     // 设置间接引用地址
     msg.slave_id = 0x01;
     msg.func_code = 1;
     msg.write_addr = 4864;
     msg.write_num = 32;
+    // ---------里程计数据读取---------
     msg.data[0] = 1069;  // 里程计X
     msg.data[1] = 1070;  // 里程计Y
     msg.data[2] = 1071;  // 里程计Theta
-    // msg.data[0] = 1032;  // 陀螺仪融合里程计X
-    // msg.data[1] = 1033;  // 陀螺仪融合里程计Y
-    // msg.data[2] = 1037;  // 陀螺仪融合里程计YAW
+    // ---------IMU数据读取---------
+    msg.data[3] = 1038;  // 加速度X
+    msg.data[4] = 1039;  // 加速度Y
+    msg.data[5] = 1040;  // 加速度Z
+    msg.data[6] = 1041;  // 角速度ROLL
+    msg.data[7] = 1042;  // 角速度PITCH
+    msg.data[8] = 1043;  // 角速度YAW
+    // ---------里程计IMU融合数据读取---------
+    // msg.data[9] = 1032;  // 陀螺仪融合里程计X
+    // msg.data[10] = 1033;  // 陀螺仪融合里程计Y
+    // msg.data[11] = 1037;  // 陀螺仪融合里程计YAW
     // ... 其他数据保持不变 ...
     msg.data[16] = 993;  // 直接数据运行模式
     msg.data[17] = 994;  // 前后平移速度(Vx)
@@ -142,11 +183,11 @@ int main(int argc, char** argv) {
     while (ros::ok()) {
         ros::Time current_time = ros::Time::now();
 
-        // 写入速度命令并读取里程计数据
+        // 写入速度命令,并读取里程计和IMU数据
         msg.slave_id = 0x01;
         msg.func_code = 2;
         msg.read_addr = 4928;
-        msg.read_num = 3;
+        msg.read_num = 9;  // 3个里程计数据 + 6个IMU数据
         msg.write_addr = 4960;
         msg.write_num = 4;
         {
@@ -172,7 +213,7 @@ int main(int argc, char** argv) {
         odom_trans.header.stamp = current_time;
         odom_trans.header.frame_id = "odom";
         odom_trans.child_frame_id = "base_footprint";
-        
+
         tf2::convert(odom_tf, odom_trans.transform);
         odom_broadcaster.sendTransform(odom_trans);
 
@@ -195,7 +236,37 @@ int main(int argc, char** argv) {
 
         odom_pub.publish(odom);
 
+        // 创建并发布IMU消息
+        nav_msgs::Odometry imu;
+        imu.header.stamp = current_time;
+        imu.header.frame_id = "imu_link";
+
+        {
+            std::lock_guard<std::mutex> lock(imu_mutex);
+            // 设置线性加速度
+            imu.linear_acceleration.x = imu_acc_x;
+            imu.linear_acceleration.y = imu_acc_y;
+            imu.linear_acceleration.z = imu_acc_z;
+
+            // 设置角速度
+            imu.angular_velocity.x = imu_gyro_x;
+            imu.angular_velocity.y = imu_gyro_y;
+            imu.angular_velocity.z = imu_gyro_z;
+        }
+
+        // 设置协方差矩阵(如果不确定,可以设置为未知)
+        for(int i=0; i<9; i++) {
+            imu.orientation_covariance[i] = -1;  // 姿态数据无法确定，设置为-1(方向协方差未知)
+            imu.angular_velocity_covariance[i] = 0.01;  // 角速度协方差
+            imu.linear_acceleration_covariance[i] = 0.01;  // 线性加速度协方差
+        }
+
+        imu_pub.publish(imu);
+
+        // 输出当前里程计和IMU数据
         ROS_INFO_THROTTLE(1, "Current position: x=%f, y=%f, theta=%f", odm_x, odm_y, odm_th);
+        ROS_INFO_THROTTLE(1, "IMU data - acceleration: x=%f, y=%f, z=%f, gyro: x=%f, y=%f, z=%f",
+                        imu_acc_x, imu_acc_y, imu_acc_z, imu_gyro_x, imu_gyro_y, imu_gyro_z);
 
         wait();
 

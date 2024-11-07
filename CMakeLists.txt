@@ -154,15 +154,6 @@ add_executable(amr_ros_bridge
     src/amr_ros_bridge.cpp
 )
 
-# 从 amr_ros_bridge 中拆分出的里程计接收与发布节点
-add_executable(amr_odom_to_ros
-    src/amr_odom_to_ros.cpp
-)
-
-# 从 amr_ros_bridge 中拆分出的 cmd_vel 接收与发送节点
-add_executable(cmd_vel_to_amr
-    src/cmd_vel_to_amr.cpp
-)
 
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries
@@ -183,15 +174,6 @@ add_dependencies(amr_ros_bridge
     ${catkin_EXPORTED_TARGETS}
 )
 
-add_dependencies(amr_odom_to_ros
-    ${${PROJECT_NAME}_EXPORTED_TARGETS}
-    ${catkin_EXPORTED_TARGETS}
-)
-
-add_dependencies(cmd_vel_to_amr
-    ${${PROJECT_NAME}_EXPORTED_TARGETS}
-    ${catkin_EXPORTED_TARGETS}
-)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -221,13 +203,6 @@ target_link_libraries(amr_ros_bridge
     ${catkin_LIBRARIES}
 )
 
-target_link_libraries(amr_odom_to_ros
-    ${catkin_LIBRARIES}
-)
-
-target_link_libraries(cmd_vel_to_amr
-    ${catkin_LIBRARIES}
-)
 
 #############
 ## Install ##
