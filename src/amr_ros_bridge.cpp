@@ -1,8 +1,14 @@
 /** @file    amr_ros_bridge.cpp
- *  @brief   AMR ROS Bridge 实现
+ *  @brief   AMR ROS Bridge节点，用于处理机器人的里程计和IMU数据并发布TF变换
+ *
+ *  @details 该节点主要完成以下任务：
+ *           1. 接收cmd_vel命令并将其写入到Modbus设备
+ *           2. 从Modbus设备读取里程计和IMU数据
+ *           3. 发布里程计数据（odom话题和TF变换）
+ *           4. 发布IMU数据（imu话题）
  */
 
-#include "amr_ros_bridge.hpp"
+#include "om_modbus_master/amr_ros_bridge.hpp"
 
 // ModbusComm 实现
 AmrRosBridge::ModbusComm::ModbusComm(ros::NodeHandle& nh) {
@@ -57,7 +63,8 @@ bool AmrRosBridge::ModbusComm::sendAndReceive(om_modbus_master::om_query& msg) {
     return true;
 }
 
-void AmrRosBridge::ModbusComm::setState(const om_modbus_master::om_state& state) {
+void AmrRosBridge::ModbusComm::setState(
+    const om_modbus_master::om_state& state) {
     state_driver_ = state.state_driver;
     state_mes_ = state.state_mes;
     state_error_ = state.state_error;
@@ -68,14 +75,16 @@ AmrRosBridge::OdometryHandler::OdometryHandler(ros::NodeHandle& nh) {
     odom_pub_ = nh.advertise<nav_msgs::Odometry>("odom", 50);
 }
 
-void AmrRosBridge::OdometryHandler::updateCommand(const geometry_msgs::Twist& twist) {
+void AmrRosBridge::OdometryHandler::updateCommand(
+    const geometry_msgs::Twist& twist) {
     std::lock_guard<std::mutex> lock(mutex_);
     cmd_vel_x_ = twist.linear.x;
     cmd_vel_y_ = twist.linear.y;
     cmd_vel_th_ = twist.angular.z;
 }
 
-void AmrRosBridge::OdometryHandler::updateData(const om_modbus_master::om_response& msg) {
+void AmrRosBridge::OdometryHandler::updateData(
+    const om_modbus_master::om_response& msg) {
     std::lock_guard<std::mutex> lock(mutex_);
     odom_pos_x_ = msg.data[0] / 1000.0;
     odom_pos_y_ = msg.data[1] / 1000.0;
@@ -134,7 +143,8 @@ AmrRosBridge::ImuHandler::ImuHandler(ros::NodeHandle& nh) {
     imu_pub_ = nh.advertise<sensor_msgs::Imu>("imu", 50);
 }
 
-void AmrRosBridge::ImuHandler::updateData(const om_modbus_master::om_response& msg) {
+void AmrRosBridge::ImuHandler::updateData(
+    const om_modbus_master::om_response& msg) {
     std::lock_guard<std::mutex> lock(mutex_);
     acc_x_ = msg.data[3] * ACC_SCALE;
     acc_y_ = msg.data[4] * ACC_SCALE;
@@ -159,7 +169,7 @@ void AmrRosBridge::ImuHandler::publish(const ros::Time& current_time) {
     imu.angular_velocity.y = gyro_y_;
     imu.angular_velocity.z = gyro_z_;
 
-    for(int i=0; i<9; i++) {
+    for (int i = 0; i < 9; i++) {
         imu.orientation_covariance[i] = -1;
         imu.angular_velocity_covariance[i] = 0.01;
         imu.linear_acceleration_covariance[i] = 0.01;
@@ -176,33 +186,37 @@ AmrRosBridge::AmrRosBridge(ros::NodeHandle& nh) : nh_(nh), running_(false) {
     odom_ = std::make_unique<OdometryHandler>(nh_);
     imu_ = std::make_unique<ImuHandler>(nh_);
 
-    cmd_vel_sub_ = nh_.subscribe("cmd_vel", 1, &AmrRosBridge::cmdVelCallback, this);
-    modbus_response_sub_ = nh_.subscribe("om_response1", 1, &AmrRosBridge::modbusResponseCallback, this);
-    modbus_state_sub_ = nh_.subscribe("om_state1", 1, &AmrRosBridge::modbusStateCallback, this);
+    cmd_vel_sub_ =
+        nh_.subscribe("cmd_vel", 1, &AmrRosBridge::cmdVelCallback, this);
+    modbus_response_sub_ = nh_.subscribe(
+        "om_response1", 1, &AmrRosBridge::modbusResponseCallback, this);
+    modbus_state_sub_ =
+        nh_.subscribe("om_state1", 1, &AmrRosBridge::modbusStateCallback, this);
 }
 
-AmrRosBridge::~AmrRosBridge() {
-    shutdown();
-}
+AmrRosBridge::~AmrRosBridge() { shutdown(); }
 
 void AmrRosBridge::loadParameters() {
     double device_rate;
     nh_.param<double>("modbus_device_rate", device_rate, 20.0);
-    nh_.param<double>("update_rate", update_rate_, std::min(10.0, device_rate/2));
+    nh_.param<double>("update_rate", update_rate_,
+                      std::min(10.0, device_rate / 2));
 }
 
 void AmrRosBridge::cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
     odom_->updateCommand(*msg);
 }
 
-void AmrRosBridge::modbusResponseCallback(const om_modbus_master::om_response::ConstPtr& msg) {
+void AmrRosBridge::modbusResponseCallback(
+    const om_modbus_master::om_response::ConstPtr& msg) {
     if (msg->slave_id == 1) {
         odom_->updateData(*msg);
         imu_->updateData(*msg);
     }
 }
 
-void AmrRosBridge::modbusStateCallback(const om_modbus_master::om_state::ConstPtr& msg) {
+void AmrRosBridge::modbusStateCallback(
+    const om_modbus_master::om_state::ConstPtr& msg) {
     modbus_->setState(*msg);
 }
 
@@ -346,8 +360,7 @@ int main(int argc, char** argv) {
         }
 
         bridge.run();
-    }
-    catch (const std::exception& e) {
+    } catch (const std::exception& e) {
         ROS_ERROR("Exception in AMR ROS Bridge: %s", e.what());
         return 1;
     }
