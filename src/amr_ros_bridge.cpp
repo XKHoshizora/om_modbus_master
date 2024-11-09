@@ -16,6 +16,40 @@ AmrRosBridge::ModbusComm::ModbusComm(ros::NodeHandle& nh) {
     last_spin_time_ = ros::Time::now();
 }
 
+bool AmrRosBridge::ModbusComm::init() {
+    ROS_INFO("Initializing Modbus communication...");
+
+    // 初始化设备
+    om_modbus_master::om_query msg;
+    msg.slave_id = 0x00;   // 广播地址
+    msg.func_code = 1;     // 写入功能
+    msg.write_addr = 124;  // 驱动器输入命令地址
+    msg.write_num = 1;     // 写入1个32位数据
+    msg.data[0] = 0;       // 所有位置为OFF
+
+    // 尝试与设备建立通信
+    int init_retry = 0;
+    const int MAX_INIT_RETRY = 5;
+
+    while (init_retry < MAX_INIT_RETRY) {
+        query_pub_.publish(msg);
+
+        if (waitForResponse()) {
+            ROS_INFO("Modbus communication initialized successfully");
+            return true;
+        }
+
+        ROS_WARN("Modbus initialization attempt %d/%d failed",
+                 init_retry + 1, MAX_INIT_RETRY);
+        ros::Duration(1.0).sleep();
+        init_retry++;
+    }
+
+    ROS_ERROR("Failed to initialize Modbus communication after %d attempts",
+              MAX_INIT_RETRY);
+    return false;
+}
+
 bool AmrRosBridge::ModbusComm::waitForResponse() {
     ros::Duration(0.03).sleep();
 
