@@ -208,11 +208,10 @@ int main(int argc, char** argv) {
     }
 
     // 主循环
-    bool first_read = true;
     while (ros::ok()) {
         ros::Time current_time = ros::Time::now();
 
-        // 写入速度命令
+        // 写入速度命令并读取数据
         msg.slave_id = 0x01;
         msg.func_code = 2;
         msg.read_addr = 4928;
@@ -230,6 +229,7 @@ int main(int argc, char** argv) {
         // 发送命令并等待响应
         pub.publish(msg);
         if (!waitForResponse()) {
+            ROS_WARN_THROTTLE(1.0, "Communication timeout, retrying...");
             ros::Duration(0.1).sleep();
             continue;
         }
@@ -289,21 +289,20 @@ int main(int argc, char** argv) {
             imu.angular_velocity.z = imu_gyro_z;
         }
 
-        // 设置协方差矩阵(如果不确定,可以设置为未知)
+        // 设置协方差矩阵
         for(int i=0; i<9; i++) {
-            imu.orientation_covariance[i] = -1;  // 姿态数据无法确定，设置为-1(方向协方差未知)
+            imu.orientation_covariance[i] = -1;  // 姿态数据无法确定
             imu.angular_velocity_covariance[i] = 0.01;  // 角速度协方差
             imu.linear_acceleration_covariance[i] = 0.01;  // 线性加速度协方差
         }
 
         imu_pub.publish(imu);
 
-        // 输出当前里程计和IMU数据
+        // 输出调试信息
+        ROS_DEBUG("Command sent: x_spd=%f, y_spd=%f, z_ang=%f", x_spd, y_spd, z_ang);
         ROS_INFO_THROTTLE(1, "Current position: x=%f, y=%f, theta=%f", odm_x, odm_y, odm_th);
-        ROS_INFO_THROTTLE(1, "IMU data - acceleration: x=%f, y=%f, z=%f, gyro: x=%f, y=%f, z=%f",
-                        imu_acc_x, imu_acc_y, imu_acc_z, imu_gyro_x, imu_gyro_y, imu_gyro_z);
-
-        waitForResponse();
+        ROS_INFO_THROTTLE(1, "IMU data - acc: x=%f, y=%f, z=%f, gyro: x=%f, y=%f, z=%f",
+                         imu_acc_x, imu_acc_y, imu_acc_z, imu_gyro_x, imu_gyro_y, imu_gyro_z);
 
         ros::spinOnce();
         loop_rate.sleep();
