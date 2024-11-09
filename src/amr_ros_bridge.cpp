@@ -100,21 +100,20 @@ void stateCallback(const om_modbus_master::om_state msg) {
  * @return bool 通信是否成功
  */
 bool waitForResponse(void) {
-    int retry_count = 0;
-    while (retry_count < MAX_RETRY_COUNT) {
-        ros::Duration(0.05).sleep();  // 增加基础延时
-        ros::spinOnce();
+    ros::Duration(0.03).sleep();
+    ros::spinOnce();
 
-        if (gState_driver == 0) {
-            return true;  // 通信成功
+    // 设置一个较长的超时时间
+    ros::Time start_time = ros::Time::now();
+    while (gState_driver == 1) {
+        // 如果等待超过1秒，返回失败
+        if ((ros::Time::now() - start_time).toSec() > 1.0) {
+            ROS_WARN_THROTTLE(1.0, "Communication timeout");
+            return false;
         }
-
-        // 如果驱动忙，等待后重试
-        ROS_DEBUG("Driver busy, retrying... (%d/%d)", retry_count + 1, MAX_RETRY_COUNT);
-        ros::Duration(RETRY_DELAY).sleep();
-        retry_count++;
+        ros::spinOnce();
     }
-    return false;  // 通信失败
+    return true;
 }
 
 void init(om_modbus_master::om_query msg, ros::Publisher pub) {
@@ -213,31 +212,26 @@ int main(int argc, char** argv) {
     while (ros::ok()) {
         ros::Time current_time = ros::Time::now();
 
-        // 如果是第一次读取或者上次通信成功，才发送新的请求
-        if (first_read || gState_driver == 0) {
-            // 写入速度命令
-            msg.slave_id = 0x01;
-            msg.func_code = 2;
-            msg.read_addr = 4928;
-            msg.read_num = 9;  // 3个里程计数据 + 6个IMU数据
-            msg.write_addr = 4960;
-            msg.write_num = 4;
-            {
-                std::lock_guard<std::mutex> lock(odom_mutex);
-                msg.data[0] = 1;
-                msg.data[1] = x_spd;
-                msg.data[2] = z_ang;
-                msg.data[3] = y_spd;
-            }
-            pub.publish(msg);
-            first_read = false;
+        // 写入速度命令
+        msg.slave_id = 0x01;
+        msg.func_code = 2;
+        msg.read_addr = 4928;
+        msg.read_num = 9;  // 3个里程计数据 + 6个IMU数据
+        msg.write_addr = 4960;
+        msg.write_num = 4;
+        {
+            std::lock_guard<std::mutex> lock(odom_mutex);
+            msg.data[0] = 1;
+            msg.data[1] = x_spd;
+            msg.data[2] = z_ang;
+            msg.data[3] = y_spd;
+        }
 
-            // 等待响应，但不阻塞太久
-            if (!waitForResponse()) {
-                ROS_WARN_THROTTLE(1.0, "Communication timeout");
-                ros::Duration(0.1).sleep();
-                continue;
-            }
+        // 发送命令并等待响应
+        pub.publish(msg);
+        if (!waitForResponse()) {
+            ros::Duration(0.1).sleep();
+            continue;
         }
 
         // 创建并发布odom到base_footprint的TF变换
