@@ -237,7 +237,7 @@ int main(int argc, char** argv) {
         odom_pub.publish(odom);
 
         // 创建并发布IMU消息
-        nav_msgs::Odometry imu;
+        sensor_msgs::Imu imu;
         imu.header.stamp = current_time;
         imu.header.frame_id = "imu_link";
 
