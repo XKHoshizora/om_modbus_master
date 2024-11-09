@@ -27,6 +27,8 @@
 int gState_driver = 0; // 通信状态标志（0:可通信，1:通信中）
 int gState_mes = 0;    // 消息状态（0:无消息，1:消息到达，2:消息错误）
 int gState_error = 0;  // 错误状态（0:无错误，1:无响应，2:异常响应）
+const int MAX_RETRY_COUNT = 3;  // 最大重试次数
+const double RETRY_DELAY = 0.1; // 重试延时(秒)
 
 std::mutex odom_mutex;
 std::mutex imu_mutex;
@@ -94,29 +96,50 @@ void stateCallback(const om_modbus_master::om_state msg) {
 }
 
 /**
- * @brief 等待通信完成
+ * @brief 等待通信完成，带有超时和重试机制
+ * @return bool 通信是否成功
  */
-void wait(void) {
-    ros::Duration(0.03).sleep();
-    ros::spinOnce();
-    while (gState_driver == 1) {
+bool waitForResponse(void) {
+    int retry_count = 0;
+    while (retry_count < MAX_RETRY_COUNT) {
+        ros::Duration(0.05).sleep();  // 增加基础延时
         ros::spinOnce();
+
+        if (gState_driver == 0) {
+            return true;  // 通信成功
+        }
+
+        // 如果驱动忙，等待后重试
+        ROS_DEBUG("Driver busy, retrying... (%d/%d)", retry_count + 1, MAX_RETRY_COUNT);
+        ros::Duration(RETRY_DELAY).sleep();
+        retry_count++;
     }
+    return false;  // 通信失败
 }
 
-/**
- * @brief 初始化Modbus设备
- * @param msg 查询消息
- * @param pub 发布者对象
- */
 void init(om_modbus_master::om_query msg, ros::Publisher pub) {
-    msg.slave_id = 0x00;   // 广播
-    msg.func_code = 1;     // 写入功能
-    msg.write_addr = 124;  // 驱动器输入命令地址
-    msg.write_num = 1;     // 写入1个32位数据
-    msg.data[0] = 0;       // 所有位置为OFF
-    pub.publish(msg);
-    wait();
+    int init_retry = 0;
+    const int MAX_INIT_RETRY = 5;  // 初始化最大重试次数
+
+    while (init_retry < MAX_INIT_RETRY) {
+        msg.slave_id = 0x00;   // 广播
+        msg.func_code = 1;     // 写入功能
+        msg.write_addr = 124;  // 驱动器输入命令地址
+        msg.write_num = 1;     // 写入1个32位数据
+        msg.data[0] = 0;       // 所有位置为OFF
+        pub.publish(msg);
+
+        if (waitForResponse()) {
+            ROS_INFO("Device initialized successfully");
+            return;
+        }
+
+        ROS_WARN("Init failed, retrying... (%d/%d)", init_retry + 1, MAX_INIT_RETRY);
+        ros::Duration(1.0).sleep();  // 初始化失败后等待较长时间
+        init_retry++;
+    }
+
+    ROS_ERROR("Failed to initialize device after %d attempts", MAX_INIT_RETRY);
 }
 
 int main(int argc, char** argv) {
@@ -144,7 +167,10 @@ int main(int argc, char** argv) {
 
     om_modbus_master::om_query msg;
 
+    // 等待系统稳定
     ros::Duration(1.0).sleep();
+
+    // 初始化设备
     init(msg, pub);
     ros::Rate loop_rate(update_rate);
 
@@ -178,26 +204,41 @@ int main(int argc, char** argv) {
     // ... 其他数据保持为0 ...
 
     pub.publish(msg);
-    wait();
+    if (!waitForResponse()) {
+        ROS_ERROR("Failed to set initial parameters");
+    }
 
+    // 主循环
+    bool first_read = true;
     while (ros::ok()) {
         ros::Time current_time = ros::Time::now();
 
-        // 写入速度命令,并读取里程计和IMU数据
-        msg.slave_id = 0x01;
-        msg.func_code = 2;
-        msg.read_addr = 4928;
-        msg.read_num = 9;  // 3个里程计数据 + 6个IMU数据
-        msg.write_addr = 4960;
-        msg.write_num = 4;
-        {
-            std::lock_guard<std::mutex> lock(odom_mutex);
-            msg.data[0] = 1;
-            msg.data[1] = x_spd;
-            msg.data[2] = z_ang;
-            msg.data[3] = y_spd;
+        // 如果是第一次读取或者上次通信成功，才发送新的请求
+        if (first_read || gState_driver == 0) {
+            // 写入速度命令
+            msg.slave_id = 0x01;
+            msg.func_code = 2;
+            msg.read_addr = 4928;
+            msg.read_num = 9;  // 3个里程计数据 + 6个IMU数据
+            msg.write_addr = 4960;
+            msg.write_num = 4;
+            {
+                std::lock_guard<std::mutex> lock(odom_mutex);
+                msg.data[0] = 1;
+                msg.data[1] = x_spd;
+                msg.data[2] = z_ang;
+                msg.data[3] = y_spd;
+            }
+            pub.publish(msg);
+            first_read = false;
+
+            // 等待响应，但不阻塞太久
+            if (!waitForResponse()) {
+                ROS_WARN_THROTTLE(1.0, "Communication timeout");
+                ros::Duration(0.1).sleep();
+                continue;
+            }
         }
-        pub.publish(msg);
 
         // 创建并发布odom到base_footprint的TF变换
         tf2::Transform odom_tf;
@@ -273,6 +314,18 @@ int main(int argc, char** argv) {
         ros::spinOnce();
         loop_rate.sleep();
     }
+
+    // 退出前发送停止命令
+    msg.slave_id = 0x01;
+    msg.func_code = 1;
+    msg.write_addr = 4960;
+    msg.write_num = 4;
+    msg.data[0] = 0;
+    msg.data[1] = 0;
+    msg.data[2] = 0;
+    msg.data[3] = 0;
+    pub.publish(msg);
+    waitForResponse();
 
     return 0;
 }

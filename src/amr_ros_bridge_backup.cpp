@@ -172,7 +172,7 @@ int main(int argc, char** argv) {
         odom_trans.header.stamp = current_time;
         odom_trans.header.frame_id = "odom";
         odom_trans.child_frame_id = "base_footprint";
-        
+
         tf2::convert(odom_tf, odom_trans.transform);
         odom_broadcaster.sendTransform(odom_trans);
 
