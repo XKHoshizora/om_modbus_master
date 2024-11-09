@@ -309,7 +309,7 @@ int main(int argc, char** argv) {
         ROS_INFO_THROTTLE(1, "IMU data - acceleration: x=%f, y=%f, z=%f, gyro: x=%f, y=%f, z=%f",
                         imu_acc_x, imu_acc_y, imu_acc_z, imu_gyro_x, imu_gyro_y, imu_gyro_z);
 
-        wait();
+        waitForResponse();
 
         ros::spinOnce();
         loop_rate.sleep();
