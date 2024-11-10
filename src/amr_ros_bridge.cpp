@@ -54,6 +54,15 @@ struct VelocityCommand {
     bool updated = false;
 } latest_cmd;
 
+// 安全控制结构体
+struct SafetyControl {
+    ros::Time last_cmd_time;            // 最后收到速度指令的时间
+    ros::Time last_odom_time;           // 最后收到里程计数据的时间
+    std::atomic<bool> odom_healthy{false};  // 里程计健康状态
+    const double CMD_TIMEOUT = 0.2;     // 速度指令超时时间(200ms)
+    const double ODOM_TIMEOUT = 0.2;    // 里程计超时时间(200ms)
+} safety_control;
+
 // 互斥锁和同步变量
 std::mutex state_mutex;
 std::mutex cmd_mutex;
@@ -77,18 +86,28 @@ om_modbus_master::om_query vel_msg;
 
 // 处理从Modbus设备接收到的响应
 void responseCallback(const om_modbus_master::om_response::ConstPtr& msg) {
-    if (!msg || msg->data.size() < 9) return;
+    if (!msg || msg->data.size() < 9) {
+        ROS_WARN_THROTTLE(1.0, "Invalid response data");
+        safety_control.odom_healthy = false;
+        return;
+    }
 
-    std::lock_guard<std::mutex> lock(state_mutex);
-    robot_state.odom_x = msg->data[0] / 1000.0;      // mm -> m
-    robot_state.odom_y = msg->data[1] / 1000.0;
-    robot_state.odom_yaw = msg->data[2] / 1000000.0; // μrad -> rad
-    robot_state.acc_x = msg->data[3] * ACC_SCALE;
-    robot_state.acc_y = msg->data[4] * ACC_SCALE;
-    robot_state.acc_z = msg->data[5] * ACC_SCALE;
-    robot_state.gyro_x = msg->data[6] * GYRO_SCALE;
-    robot_state.gyro_y = msg->data[7] * GYRO_SCALE;
-    robot_state.gyro_z = msg->data[8] * GYRO_SCALE;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex);
+        robot_state.odom_x = msg->data[0] / 1000.0;      // mm -> m
+        robot_state.odom_y = msg->data[1] / 1000.0;
+        robot_state.odom_yaw = msg->data[2] / 1000000.0; // μrad -> rad
+        robot_state.acc_x = msg->data[3] * ACC_SCALE;
+        robot_state.acc_y = msg->data[4] * ACC_SCALE;
+        robot_state.acc_z = msg->data[5] * ACC_SCALE;
+        robot_state.gyro_x = msg->data[6] * GYRO_SCALE;
+        robot_state.gyro_y = msg->data[7] * GYRO_SCALE;
+        robot_state.gyro_z = msg->data[8] * GYRO_SCALE;
+    }
+
+    // 更新里程计健康状态
+    safety_control.last_odom_time = ros::Time::now();
+    safety_control.odom_healthy = true;
 }
 
 // 处理接收到的速度指令
@@ -98,6 +117,7 @@ void cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
     latest_cmd.linear_y = std::clamp(msg->linear.y, -MAX_LINEAR_VEL, MAX_LINEAR_VEL);
     latest_cmd.angular_z = std::clamp(msg->angular.z, -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL);
     latest_cmd.updated = true;
+    safety_control.last_cmd_time = ros::Time::now();
 }
 
 // 发布里程计和TF数据
@@ -151,60 +171,21 @@ void publishImu(const ros::Time& time) {
     imu_pub.publish(imu_msg);
 }
 
-// 速度控制线程
-void velocityControlThread() {
-    ros::Rate rate(20);  // 速度控制使用20Hz
-
-    // 预先配置速度控制消息
-    vel_msg.slave_id = 0x01;
-    vel_msg.func_code = 1;
-    vel_msg.write_addr = REG_VEL_START;
-    vel_msg.write_num = 4;
-
-    for(int i = 0; i < 64; i++) {
-        vel_msg.data[i] = 0;
-    }
-    vel_msg.data[0] = 1;  // 使能
-
-    while(ros::ok() && is_running) {
-        bool should_publish = false;
-
-        {
-            std::lock_guard<std::mutex> lock(cmd_mutex);
-            if (latest_cmd.updated) {
-                vel_msg.data[1] = static_cast<int32_t>(latest_cmd.linear_x * 1000);
-                vel_msg.data[2] = static_cast<int32_t>(latest_cmd.angular_z * 1000000);
-                vel_msg.data[3] = static_cast<int32_t>(latest_cmd.linear_y * 1000);
-                latest_cmd.updated = false;
-                should_publish = true;
-            }
-        }
-
-        if (should_publish) {
-            std::lock_guard<std::mutex> lock(query_mutex);
-            query_pub.publish(vel_msg);
-        }
-
-        rate.sleep();
-    }
-}
-
 // 状态查询线程（主线程）
 void stateQueryThread() {
-    ros::Rate rate(20);  // 状态查询使用20Hz
+    ros::Rate rate(20);
 
-    // 预先配置状态查询消息
+    // 预先配置状态查询消息 - 只读取，不写入
     state_query_msg.slave_id = 0x01;
-    state_query_msg.func_code = 2;
+    state_query_msg.func_code = 2;  // 读取功能码
     state_query_msg.read_addr = REG_ODOM_START;
     state_query_msg.read_num = 9;
-    state_query_msg.write_addr = REG_VEL_START;
-    state_query_msg.write_num = 4;
+    state_query_msg.write_addr = 0;  // 不需要写入
+    state_query_msg.write_num = 0;   // 不需要写入
 
     for(int i = 0; i < 64; i++) {
         state_query_msg.data[i] = 0;
     }
-    state_query_msg.data[0] = 1;  // 使能
 
     while(ros::ok() && is_running) {
         {
@@ -217,6 +198,74 @@ void stateQueryThread() {
         publishImu(current_time);
 
         ros::spinOnce();
+        rate.sleep();
+    }
+}
+
+// 速度控制线程
+void velocityControlThread() {
+    ros::Rate rate(20);  // 速度控制使用20Hz
+
+    // 预先配置速度控制消息
+    vel_msg.slave_id = 0x01;
+    vel_msg.func_code = 1;  // 写入功能码
+    vel_msg.write_addr = REG_VEL_START;
+    vel_msg.write_num = 4;
+
+    for(int i = 0; i < 64; i++) {
+        vel_msg.data[i] = 0;
+    }
+    vel_msg.data[0] = 1;  // 使能
+
+    // 确保初始状态为停止
+    vel_msg.data[1] = 0;  // Vx = 0
+    vel_msg.data[2] = 0;  // ω = 0
+    vel_msg.data[3] = 0;  // Vy = 0
+
+    while(ros::ok() && is_running) {
+        ros::Time current_time = ros::Time::now();
+        bool need_stop = false;
+
+        // 安全检查
+        if ((current_time - safety_control.last_cmd_time).toSec() > safety_control.CMD_TIMEOUT) {
+            need_stop = true;
+            ROS_WARN_THROTTLE(1.0, "Velocity command timeout, stopping robot");
+        }
+
+        if ((current_time - safety_control.last_odom_time).toSec() > safety_control.ODOM_TIMEOUT) {
+            need_stop = true;
+            safety_control.odom_healthy = false;
+            ROS_ERROR_THROTTLE(1.0, "Odometry timeout, stopping robot");
+        }
+
+        if (!safety_control.odom_healthy) {
+            need_stop = true;
+            ROS_ERROR_THROTTLE(1.0, "Odometry unhealthy, stopping robot");
+        }
+
+        // 更新速度命令
+        {
+            std::lock_guard<std::mutex> lock(cmd_mutex);
+            if (need_stop) {
+                // 安全停止
+                vel_msg.data[1] = 0;
+                vel_msg.data[2] = 0;
+                vel_msg.data[3] = 0;
+            } else if (latest_cmd.updated) {
+                // 只在安全的情况下更新新的速度命令
+                vel_msg.data[1] = static_cast<int32_t>(latest_cmd.linear_x * 1000);
+                vel_msg.data[2] = static_cast<int32_t>(latest_cmd.angular_z * 1000000);
+                vel_msg.data[3] = static_cast<int32_t>(latest_cmd.linear_y * 1000);
+                latest_cmd.updated = false;
+            }
+        }
+
+        // 发送速度命令
+        {
+            std::lock_guard<std::mutex> lock(query_mutex);
+            query_pub.publish(vel_msg);
+        }
+
         rate.sleep();
     }
 }
@@ -237,7 +286,7 @@ int main(int argc, char** argv) {
     ros::Subscriber cmd_vel_sub = nh.subscribe("cmd_vel", 1, cmdVelCallback);
 
     ROS_INFO("Initializing AMR ROS Bridge...");
-    ros::Duration(1.0).sleep();
+    ros::Duration(0.5).sleep();
 
     // 设置寄存器映射
     om_modbus_master::om_query init_msg;
@@ -269,8 +318,12 @@ int main(int argc, char** argv) {
         query_pub.publish(init_msg);
     }
 
-    ros::Duration(1.0).sleep();
+    ros::Duration(0.5).sleep();
     ROS_INFO("AMR ROS Bridge initialized successfully");
+
+    // 初始化安全控制时间戳
+    safety_control.last_cmd_time = ros::Time::now();
+    safety_control.last_odom_time = ros::Time::now();
 
     // 启动速度控制线程
     std::thread vel_thread(velocityControlThread);
@@ -278,11 +331,30 @@ int main(int argc, char** argv) {
     // 在主线程中运行状态查询
     stateQueryThread();
 
-    // 清理
+    // 清理程序退出
     is_running = false;
     if(vel_thread.joinable()) {
         vel_thread.join();
     }
+
+    // 确保机器人停止
+    om_modbus_master::om_query stop_msg;
+    stop_msg.slave_id = 0x01;
+    stop_msg.func_code = 1;
+    stop_msg.write_addr = REG_VEL_START;
+    stop_msg.write_num = 4;
+
+    for(int i = 0; i < 64; i++) {
+        stop_msg.data[i] = 0;
+    }
+    stop_msg.data[0] = 1;  // 使能
+
+    {
+        std::lock_guard<std::mutex> lock(query_mutex);
+        query_pub.publish(stop_msg);
+    }
+
+    ROS_INFO("AMR ROS Bridge shutdown complete");
 
     return 0;
 }
