@@ -294,6 +294,13 @@ void AmrRosBridge::cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
 void AmrRosBridge::modbusResponseCallback(
     const om_modbus_master::om_response::ConstPtr& msg) {
     if (msg->slave_id == 1) {
+        // 打印原始响应数据
+        ROS_DEBUG_THROTTLE(1.0, "Modbus Response - IMU Raw Data:");
+        ROS_DEBUG_THROTTLE(1.0, "Acc [counts]: %d, %d, %d",
+                         msg->data[3], msg->data[4], msg->data[5]);
+        ROS_DEBUG_THROTTLE(1.0, "Gyro [counts]: %d, %d, %d",
+                         msg->data[6], msg->data[7], msg->data[8]);
+
         odom_->updateData(*msg);
         imu_->updateData(*msg);
     }
@@ -312,31 +319,37 @@ bool AmrRosBridge::setupModbusRegisters(om_modbus_master::om_query& msg) {
     msg.read_addr = 0;     // 初始化不需要读取
     msg.read_num = 0;      // 初始化不需要读取
 
-    // 初始化数据数组
-    for(int i = 0; i < 64; i++) {
-        msg.data[i] = 0;
-    }
+    // 清空数据数组
+    std::fill(msg.data, msg.data + 64, 0);
 
     // 设置寄存器地址
     msg.data[0] = 1069;  // 里程计X
     msg.data[1] = 1070;  // 里程计Y
     msg.data[2] = 1071;  // 里程计Theta
-    msg.data[3] = 1038;  // 加速度X
-    msg.data[4] = 1039;  // 加速度Y
-    msg.data[5] = 1040;  // 加速度Z
-    msg.data[6] = 1041;  // 角速度ROLL
-    msg.data[7] = 1042;  // 角速度PITCH
-    msg.data[8] = 1043;  // 角速度YAW
+    msg.data[3] = 1038;  // 加速度X (0.001 m/s²)
+    msg.data[4] = 1039;  // 加速度Y (0.001 m/s²)
+    msg.data[5] = 1040;  // 加速度Z (0.001 m/s²)
+    msg.data[6] = 1041;  // 角速度ROLL (0.000001 rad/s)
+    msg.data[7] = 1042;  // 角速度PITCH (0.000001 rad/s)
+    msg.data[8] = 1043;  // 角速度YAW (0.000001 rad/s)
     msg.data[16] = 993;  // 直接数据运行模式
     msg.data[17] = 994;  // 前后平移速度(Vx)
     msg.data[18] = 995;  // 角速度(ω)
     msg.data[19] = 996;  // 左右平移速度(Vy)
 
+    ROS_INFO("Setting up Modbus registers for IMU data:");
+    ROS_INFO("Acceleration registers: %d, %d, %d",
+             msg.data[3], msg.data[4], msg.data[5]);
+    ROS_INFO("Gyroscope registers: %d, %d, %d",
+             msg.data[6], msg.data[7], msg.data[8]);
+
+    // 发送并验证
     if (!modbus_->sendAndReceive(msg)) {
         ROS_ERROR("Failed to setup Modbus registers");
         return false;
     }
 
+    ROS_INFO("Modbus registers setup completed");
     return true;
 }
 
@@ -421,11 +434,15 @@ void AmrRosBridge::run() {
         // 2. 处理状态更新 - 低优先级
         if ((current_time - last_status_update).toSec() >= 0.05) {  // 20Hz
             status_msg.slave_id = 0x01;
-            status_msg.func_code = 0;
+            status_msg.func_code = 0;      // 读取功能
             status_msg.read_addr = 4928;
             status_msg.read_num = 9;
             status_msg.write_addr = 0;
             status_msg.write_num = 0;
+
+            // 打印请求详情
+            ROS_DEBUG("Sending status request: addr=%d, num=%d",
+                     status_msg.read_addr, status_msg.read_num);
 
             for(int i = 0; i < 64; i++) {
                 status_msg.data[i] = 0;
@@ -433,6 +450,14 @@ void AmrRosBridge::run() {
 
             if (modbus_->sendAndReceive(status_msg, ModbusComm::CommandType::STATUS)) {
                 last_status_update = current_time;
+
+                // 检查数据更新频率
+                static ros::Time last_debug_time = ros::Time::now();
+                double update_period = (current_time - last_debug_time).toSec();
+                ROS_DEBUG_THROTTLE(1.0, "Status update period: %.3f s (%.1f Hz)",
+                                 update_period, 1.0/update_period);
+                last_debug_time = current_time;
+
                 odom_->publish(current_time);
                 imu_->publish(current_time);
             }
