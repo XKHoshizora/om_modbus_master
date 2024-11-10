@@ -183,6 +183,11 @@ void AmrRosBridge::ImuHandler::updateData(
     const om_modbus_master::om_response& msg) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    // 打印原始数据
+    ROS_DEBUG("Raw IMU data received - [%d, %d, %d, %d, %d, %d]",
+             msg.data[3], msg.data[4], msg.data[5],
+             msg.data[6], msg.data[7], msg.data[8]);
+
     // 保存原始数据
     raw_acc_x_ = msg.data[3];
     raw_acc_y_ = msg.data[4];
@@ -191,17 +196,16 @@ void AmrRosBridge::ImuHandler::updateData(
     raw_gyro_y_ = msg.data[7];
     raw_gyro_z_ = msg.data[8];
 
-    // 添加调试输出
-    static int debug_counter = 0;
-    if (debug_counter++ % 100 == 0) {
-        ROS_DEBUG("IMU Data - Acc[m/s²]: [%.3f, %.3f, %.3f], Gyro[rad/s]: [%.6f, %.6f, %.6f]",
-                raw_acc_x_ * ACC_SCALE,
-                raw_acc_y_ * ACC_SCALE,
-                raw_acc_z_ * ACC_SCALE,
-                raw_gyro_x_ * GYRO_SCALE,
-                raw_gyro_y_ * GYRO_SCALE,
-                raw_gyro_z_ * GYRO_SCALE);
-    }
+    // 打印转换后的数据
+    ROS_DEBUG("Converted IMU data [m/s², rad/s]:");
+    ROS_DEBUG("Acc: [%.3f, %.3f, %.3f]",
+             raw_acc_x_ * ACC_SCALE,
+             raw_acc_y_ * ACC_SCALE,
+             raw_acc_z_ * ACC_SCALE);
+    ROS_DEBUG("Gyro: [%.6f, %.6f, %.6f]",
+             raw_gyro_x_ * GYRO_SCALE,
+             raw_gyro_y_ * GYRO_SCALE,
+             raw_gyro_z_ * GYRO_SCALE);
 }
 
 void AmrRosBridge::ImuHandler::publish(const ros::Time& current_time) {
@@ -219,6 +223,17 @@ void AmrRosBridge::ImuHandler::publish(const ros::Time& current_time) {
     imu.angular_velocity.x = raw_gyro_x_ * GYRO_SCALE;  // [rad/s]
     imu.angular_velocity.y = raw_gyro_y_ * GYRO_SCALE;  // [rad/s]
     imu.angular_velocity.z = raw_gyro_z_ * GYRO_SCALE;  // [rad/s]
+
+    // 打印发布的数据
+    ROS_DEBUG("Publishing IMU data:");
+    ROS_DEBUG("Acc [m/s²]: x=%.3f, y=%.3f, z=%.3f",
+             imu.linear_acceleration.x,
+             imu.linear_acceleration.y,
+             imu.linear_acceleration.z);
+    ROS_DEBUG("Gyro [rad/s]: x=%.6f, y=%.6f, z=%.6f",
+             imu.angular_velocity.x,
+             imu.angular_velocity.y,
+             imu.angular_velocity.z);
 
     // orientation保持未知
     imu.orientation.x = 0.0;
