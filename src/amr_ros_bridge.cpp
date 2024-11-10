@@ -319,8 +319,10 @@ bool AmrRosBridge::setupModbusRegisters(om_modbus_master::om_query& msg) {
     msg.read_addr = 0;     // 初始化不需要读取
     msg.read_num = 0;      // 初始化不需要读取
 
-    // 清空数据数组
-    std::fill(msg.data, msg.data + 64, 0);
+    // 初始化数据数组
+    for(int i = 0; i < 64; i++) {
+        msg.data[i] = 0;
+    }
 
     // 设置寄存器地址
     msg.data[0] = 1069;  // 里程计X
