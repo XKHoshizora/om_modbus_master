@@ -1,11 +1,5 @@
 /** @file    amr_ros_bridge.cpp
  *  @brief   AMR ROS Bridge节点，用于处理机器人的里程计和IMU数据并发布TF变换
- *
- *  @details 该节点主要完成以下任务：
- *           1. 接收cmd_vel命令并将其写入到Modbus设备
- *           2. 从Modbus设备读取里程计和IMU数据
- *           3. 发布里程计数据（odom话题和TF变换）
- *           4. 发布IMU数据（imu话题）
  */
 
 #include "om_modbus_master/amr_ros_bridge.hpp"
@@ -39,8 +33,8 @@ bool AmrRosBridge::ModbusComm::init() {
             return true;
         }
 
-        ROS_WARN("Modbus initialization attempt %d/%d failed",
-                 init_retry + 1, MAX_INIT_RETRY);
+        ROS_WARN("Modbus initialization attempt %d/%d failed", init_retry + 1,
+                 MAX_INIT_RETRY);
         ros::Duration(1.0).sleep();
         init_retry++;
     }
@@ -60,7 +54,6 @@ bool AmrRosBridge::ModbusComm::waitForResponse() {
             return false;
         }
 
-        // 优化spinOnce调用频率
         if ((ros::Time::now() - last_spin_time_).toSec() >= 0.01) {
             ros::spinOnce();
             last_spin_time_ = ros::Time::now();
@@ -105,7 +98,10 @@ void AmrRosBridge::ModbusComm::setState(
 }
 
 // OdometryHandler 实现
-AmrRosBridge::OdometryHandler::OdometryHandler(ros::NodeHandle& nh) {
+AmrRosBridge::OdometryHandler::OdometryHandler(ros::NodeHandle& nh,
+                                               const std::string& odom_frame_id,
+                                               const std::string& base_frame_id)
+    : odom_frame_id_(odom_frame_id), base_frame_id_(base_frame_id) {
     odom_pub_ = nh.advertise<nav_msgs::Odometry>("odom", 50);
 }
 
@@ -140,26 +136,23 @@ int32_t AmrRosBridge::OdometryHandler::getVelTh() const {
 void AmrRosBridge::OdometryHandler::publish(const ros::Time& current_time) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // 创建TF变换
     tf2::Transform odom_tf;
     tf2::Quaternion q;
     odom_tf.setOrigin(tf2::Vector3(odom_pos_x_, odom_pos_y_, 0.0));
     q.setRPY(0, 0, odom_pos_th_);
     odom_tf.setRotation(q);
 
-    // 发布TF
     geometry_msgs::TransformStamped odom_trans;
     odom_trans.header.stamp = current_time;
-    odom_trans.header.frame_id = "odom";
-    odom_trans.child_frame_id = "base_footprint";
+    odom_trans.header.frame_id = odom_frame_id_;
+    odom_trans.child_frame_id = base_frame_id_;
     tf2::convert(odom_tf, odom_trans.transform);
     tf_broadcaster_.sendTransform(odom_trans);
 
-    // 发布里程计消息
     nav_msgs::Odometry odom;
     odom.header.stamp = current_time;
-    odom.header.frame_id = "odom";
-    odom.child_frame_id = "base_footprint";
+    odom.header.frame_id = odom_frame_id_;
+    odom.child_frame_id = base_frame_id_;
     odom.pose.pose.position.x = odom_pos_x_;
     odom.pose.pose.position.y = odom_pos_y_;
     odom.pose.pose.position.z = 0.0;
@@ -173,8 +166,10 @@ void AmrRosBridge::OdometryHandler::publish(const ros::Time& current_time) {
 }
 
 // ImuHandler 实现
-AmrRosBridge::ImuHandler::ImuHandler(ros::NodeHandle& nh) {
-    imu_pub_ = nh.advertise<sensor_msgs::Imu>("imu", 50);
+AmrRosBridge::ImuHandler::ImuHandler(ros::NodeHandle& nh,
+                                     const std::string& imu_frame_id)
+    : imu_frame_id_(imu_frame_id) {
+    imu_pub_ = nh.advertise<sensor_msgs::Imu>("imu/data", 50);
 }
 
 void AmrRosBridge::ImuHandler::updateData(
@@ -193,7 +188,7 @@ void AmrRosBridge::ImuHandler::publish(const ros::Time& current_time) {
 
     sensor_msgs::Imu imu;
     imu.header.stamp = current_time;
-    imu.header.frame_id = "imu_link";
+    imu.header.frame_id = imu_frame_id_;
 
     imu.linear_acceleration.x = acc_x_;
     imu.linear_acceleration.y = acc_y_;
@@ -217,8 +212,9 @@ AmrRosBridge::AmrRosBridge(ros::NodeHandle& nh) : nh_(nh), running_(false) {
     loadParameters();
 
     modbus_ = std::make_unique<ModbusComm>(nh_);
-    odom_ = std::make_unique<OdometryHandler>(nh_);
-    imu_ = std::make_unique<ImuHandler>(nh_);
+    odom_ =
+        std::make_unique<OdometryHandler>(nh_, odom_frame_id_, base_frame_id_);
+    imu_ = std::make_unique<ImuHandler>(nh_, imu_frame_id_);
 
     cmd_vel_sub_ =
         nh_.subscribe("cmd_vel", 1, &AmrRosBridge::cmdVelCallback, this);
@@ -232,9 +228,15 @@ AmrRosBridge::~AmrRosBridge() { shutdown(); }
 
 void AmrRosBridge::loadParameters() {
     double device_rate;
-    nh_.param<double>("modbus_device_rate", device_rate, 20.0);
+    nh_.param<double>("modbus_device_rate", device_rate,
+                      20.0);  // 默认值改为20.0以匹配launch文件
     nh_.param<double>("update_rate", update_rate_,
-                      std::min(10.0, device_rate / 2));
+                      20.0);  // 默认值改为20.0以匹配launch文件
+
+    // 加载TF frame参数
+    nh_.param<std::string>("base_frame", base_frame_id_, "base_footprint");
+    nh_.param<std::string>("odom_frame", odom_frame_id_, "odom");
+    nh_.param<std::string>("imu_frame", imu_frame_id_, "imu_link");
 }
 
 void AmrRosBridge::cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
@@ -376,13 +378,12 @@ void AmrRosBridge::shutdown() {
     ROS_INFO("AMR ROS Bridge shutdown complete");
 }
 
-// 主函数
 int main(int argc, char** argv) {
     ros::init(argc, argv, "amr_ros_bridge");
     ros::NodeHandle nh;
 
     // 创建异步处理器
-    ros::AsyncSpinner spinner(2);  // 使用2个线程
+    ros::AsyncSpinner spinner(4);  // 使用4个线程以适应更高频率的消息处理
     spinner.start();
 
     try {

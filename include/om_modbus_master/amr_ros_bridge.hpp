@@ -1,5 +1,11 @@
 /** @file    amr_ros_bridge.hpp
  *  @brief   AMR ROS Bridge 类定义
+ *  @details 该节点以20Hz的频率运行，处理机器人的里程计和IMU数据并发布TF变换
+ *           主要任务包括：
+ *           1. 接收cmd_vel命令并将其写入到Modbus设备
+ *           2. 从Modbus设备读取里程计和IMU数据
+ *           3. 发布里程计数据（odom话题和TF变换）
+ *           4. 发布IMU数据（imu/data话题）
  */
 
 #ifndef AMR_ROS_BRIDGE_HPP
@@ -54,7 +60,9 @@ private:
     // 内部类：里程计数据处理
     class OdometryHandler {
     public:
-        OdometryHandler(ros::NodeHandle& nh);
+        OdometryHandler(ros::NodeHandle& nh,
+                       const std::string& odom_frame_id,
+                       const std::string& base_frame_id);
         void updateCommand(const geometry_msgs::Twist& twist);
         void updateData(const om_modbus_master::om_response& msg);
         void publish(const ros::Time& current_time);
@@ -65,6 +73,8 @@ private:
     private:
         ros::Publisher odom_pub_;
         tf2_ros::TransformBroadcaster tf_broadcaster_;
+        std::string odom_frame_id_;
+        std::string base_frame_id_;
 
         std::mutex mutex_;
         // 速度命令 (实际值，单位：m/s 和 rad/s)
@@ -80,13 +90,14 @@ private:
     // 内部类：IMU数据处理
     class ImuHandler {
     public:
-        ImuHandler(ros::NodeHandle& nh);
+        ImuHandler(ros::NodeHandle& nh, const std::string& imu_frame_id);
         void updateData(const om_modbus_master::om_response& msg);
         void publish(const ros::Time& current_time);
 
     private:
         ros::Publisher imu_pub_;
         std::mutex mutex_;
+        std::string imu_frame_id_;
 
         double acc_x_{0.0};
         double acc_y_{0.0};
@@ -103,6 +114,11 @@ private:
     ros::NodeHandle& nh_;
     double update_rate_;
     bool running_;
+
+    // frame IDs
+    std::string base_frame_id_;
+    std::string odom_frame_id_;
+    std::string imu_frame_id_;
 
     std::unique_ptr<ModbusComm> modbus_;
     std::unique_ptr<OdometryHandler> odom_;
