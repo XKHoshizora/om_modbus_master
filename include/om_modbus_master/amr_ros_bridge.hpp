@@ -39,13 +39,23 @@ private:
     // 内部类：Modbus通信处理
     class ModbusComm {
     public:
+        // 命令类型枚举
+        enum class CommandType {
+            MOTION,     // 运动控制命令
+            STATUS      // 状态读取命令
+        };
+
         ModbusComm(ros::NodeHandle& nh);
         bool init();
-        bool sendAndReceive(om_modbus_master::om_query& msg);
+        bool sendAndReceive(om_modbus_master::om_query& msg, CommandType cmd_type = CommandType::STATUS);
         bool waitForResponse();
         void setState(const om_modbus_master::om_state& state);
 
     private:
+        static constexpr double COMMAND_INTERVAL = 0.02;     // 20ms用于常规命令
+        static constexpr double MOTION_CMD_INTERVAL = 0.01;  // 10ms用于运动命令
+        ros::Time last_command_time_{ros::Time::now()};
+
         ros::Publisher query_pub_;
         std::atomic<int> state_driver_{0};
         std::atomic<int> state_mes_{0};
@@ -136,6 +146,9 @@ private:
     // 工具函数
     bool setupModbusRegisters(om_modbus_master::om_query& msg);
     void loadParameters();
+
+    std::mutex motion_mutex_;
+    bool pending_motion_command_{false};
 };
 
 #endif // AMR_ROS_BRIDGE_HPP

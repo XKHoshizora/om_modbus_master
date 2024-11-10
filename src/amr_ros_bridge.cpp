@@ -69,25 +69,31 @@ bool AmrRosBridge::ModbusComm::waitForResponse() {
     return true;
 }
 
-bool AmrRosBridge::ModbusComm::sendAndReceive(om_modbus_master::om_query& msg) {
-    static int retry_count = 0;
+bool AmrRosBridge::ModbusComm::sendAndReceive(om_modbus_master::om_query& msg, CommandType cmd_type) {
+    // 根据命令类型选择不同的延时
+    double min_interval = (cmd_type == CommandType::MOTION) ?
+                         MOTION_CMD_INTERVAL : COMMAND_INTERVAL;
 
-    if (retry_count >= MAX_CONSECUTIVE_RETRIES) {
-        ros::Duration(0.1).sleep();
-    }
+    // 运动命令优先级更高，可以打断其他命令的等待
+    if (cmd_type == CommandType::MOTION ||
+        (ros::Time::now() - last_command_time_).toSec() >= min_interval) {
 
-    query_pub_.publish(msg);
+        last_command_time_ = ros::Time::now();
+        query_pub_.publish(msg);
 
-    if (!waitForResponse()) {
-        retry_count++;
-        if (retry_count > MAX_CONSECUTIVE_RETRIES) {
-            ROS_ERROR_THROTTLE(1.0, "Multiple communication failures");
+        if (!waitForResponse()) {
+            static int retry_count = 0;
+            retry_count++;
+            if (retry_count > MAX_CONSECUTIVE_RETRIES) {
+                ROS_ERROR_THROTTLE(1.0, "Multiple communication failures");
+                retry_count = 0;
+                return false;
+            }
+            return false;
         }
-        return false;
+        return true;
     }
-
-    retry_count = 0;
-    return true;
+    return false;  // 时间间隔不够
 }
 
 void AmrRosBridge::ModbusComm::setState(
@@ -169,7 +175,7 @@ void AmrRosBridge::OdometryHandler::publish(const ros::Time& current_time) {
 AmrRosBridge::ImuHandler::ImuHandler(ros::NodeHandle& nh,
                                      const std::string& imu_frame_id)
     : imu_frame_id_(imu_frame_id) {
-    imu_pub_ = nh.advertise<sensor_msgs::Imu>("imu/data", 50);
+    imu_pub_ = nh.advertise<sensor_msgs::Imu>("imu", 50);
 }
 
 void AmrRosBridge::ImuHandler::updateData(
@@ -240,7 +246,9 @@ void AmrRosBridge::loadParameters() {
 }
 
 void AmrRosBridge::cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
+    std::lock_guard<std::mutex> lock(motion_mutex_);
     odom_->updateCommand(*msg);
+    pending_motion_command_ = true;  // 设置标志，表示有新的运动命令
 }
 
 void AmrRosBridge::modbusResponseCallback(
@@ -316,37 +324,59 @@ void AmrRosBridge::run() {
     }
 
     ros::Rate loop_rate(update_rate_);
-    om_modbus_master::om_query msg;
+    om_modbus_master::om_query motion_msg, status_msg;
+    ros::Time last_status_update = ros::Time::now();
+    bool motion_command_sent = false;
 
     ROS_INFO("AMR ROS Bridge running at %.1f Hz", update_rate_);
 
     while (ros::ok() && running_) {
         ros::Time current_time = ros::Time::now();
 
-        // 准备并发送Modbus命令
-        msg.slave_id = 0x01;
-        msg.func_code = 2;
-        msg.read_addr = 4928;
-        msg.read_num = 9;
-        msg.write_addr = 4960;
-        msg.write_num = 4;
+        // 1. 处理运动命令 - 高优先级
+        {
+            std::lock_guard<std::mutex> lock(motion_mutex_);
+            if (pending_motion_command_) {  // 检查是否有新的运动命令
+                motion_msg.slave_id = 0x01;
+                motion_msg.func_code = 2;
+                motion_msg.write_addr = 4960;
+                motion_msg.write_num = 4;
 
-        // 获取当前速度命令
-        msg.data[0] = 1;
-        msg.data[1] = odom_->getVelX();
-        msg.data[2] = odom_->getVelTh();
-        msg.data[3] = odom_->getVelY();
+                motion_msg.data[0] = 1;
+                motion_msg.data[1] = odom_->getVelX();
+                motion_msg.data[2] = odom_->getVelTh();
+                motion_msg.data[3] = odom_->getVelY();
 
-        // 发送命令并等待响应
-        if (!modbus_->sendAndReceive(msg)) {
-            ROS_WARN_THROTTLE(1.0, "Failed to communicate with device");
-            ros::Duration(0.1).sleep();
-            continue;
+                if (modbus_->sendAndReceive(motion_msg, ModbusComm::CommandType::MOTION)) {
+                    motion_command_sent = true;
+                    pending_motion_command_ = false;
+                }
+            } else if (motion_command_sent) {
+                // 如果之前发送过运动命令，需要发送停止命令
+                motion_msg.data[0] = 0;
+                motion_msg.data[1] = 0;
+                motion_msg.data[2] = 0;
+                motion_msg.data[3] = 0;
+
+                if (modbus_->sendAndReceive(motion_msg, ModbusComm::CommandType::MOTION)) {
+                    motion_command_sent = false;
+                }
+            }
         }
 
-        // 发布里程计和IMU数据
-        odom_->publish(current_time);
-        imu_->publish(current_time);
+        // 2. 处理状态更新 - 低优先级
+        if ((current_time - last_status_update).toSec() >= 0.05) {  // 20Hz
+            status_msg.slave_id = 0x01;
+            status_msg.func_code = 2;
+            status_msg.read_addr = 4928;
+            status_msg.read_num = 9;
+
+            if (modbus_->sendAndReceive(status_msg, ModbusComm::CommandType::STATUS)) {
+                last_status_update = current_time;
+                odom_->publish(current_time);
+                imu_->publish(current_time);
+            }
+        }
 
         ros::spinOnce();
         loop_rate.sleep();
