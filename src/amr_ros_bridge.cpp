@@ -14,9 +14,8 @@
 #include <geometry_msgs/Twist.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2/LinearMath/Quaternion.h>
-#include <thread>
-#include <atomic>
 #include <mutex>
+#include <atomic>
 
 #include "om_modbus_master/om_query.h"
 #include "om_modbus_master/om_response.h"
@@ -63,11 +62,9 @@ struct SafetyControl {
     const double ODOM_TIMEOUT = 0.2;
 } safety_control;
 
-// 互斥锁和同步变量
+// 互斥锁
 std::mutex state_mutex;
 std::mutex cmd_mutex;
-std::mutex query_mutex;
-std::atomic<bool> is_running{true};
 
 // 常量定义
 const double ACC_SCALE = 0.001;
@@ -80,9 +77,8 @@ const uint16_t REG_MAP_START = 4864;
 const uint16_t REG_ODOM_START = 4928;
 const uint16_t REG_VEL_START = 4960;
 
-// 预配置的消息
-om_modbus_master::om_query state_query_msg;
-om_modbus_master::om_query vel_msg;
+// 查询消息
+om_modbus_master::om_query query_msg;
 
 // 处理从Modbus设备接收到的响应
 void responseCallback(const om_modbus_master::om_response::ConstPtr& msg) {
@@ -169,103 +165,6 @@ void publishImu(const ros::Time& time) {
     imu_pub.publish(imu_msg);
 }
 
-// 状态查询线程（主线程）
-void stateQueryThread() {
-    ros::Rate rate(20);
-
-    // 配置状态查询消息
-    state_query_msg.slave_id = 0x01;
-    state_query_msg.func_code = 2;    // 读写功能码
-    state_query_msg.read_addr = REG_ODOM_START;
-    state_query_msg.read_num = 9;
-    state_query_msg.write_addr = REG_VEL_START;  // 还是需要保持这个地址
-    state_query_msg.write_num = 4;              // 还是需要保持这个数量
-
-    for(int i = 0; i < 64; i++) {
-        state_query_msg.data[i] = 0;
-    }
-    state_query_msg.data[0] = 1;  // 依然需要使能
-
-    while(ros::ok() && is_running) {
-        {
-            std::lock_guard<std::mutex> lock(query_mutex);
-            query_pub.publish(state_query_msg);
-            ros::Duration(0.002).sleep();  // 添加小延时
-        }
-
-        ros::Time current_time = ros::Time::now();
-        publishOdomAndTf(current_time);
-        publishImu(current_time);
-
-        ros::spinOnce();
-        rate.sleep();
-    }
-}
-
-// 速度控制线程
-void velocityControlThread() {
-    ros::Rate rate(20);
-
-    // 配置速度控制消息
-    vel_msg.slave_id = 0x01;
-    vel_msg.func_code = 1;    // 写入功能码
-    vel_msg.write_addr = REG_VEL_START;
-    vel_msg.write_num = 4;
-    vel_msg.read_addr = REG_ODOM_START;  // 需要保持这个地址
-    vel_msg.read_num = 9;               // 需要保持这个数量
-
-    for(int i = 0; i < 64; i++) {
-        vel_msg.data[i] = 0;
-    }
-    vel_msg.data[0] = 1;  // 使能
-
-    while(ros::ok() && is_running) {
-        ros::Time current_time = ros::Time::now();
-        bool need_stop = false;
-
-        // 安全检查
-        if ((current_time - safety_control.last_cmd_time).toSec() > safety_control.CMD_TIMEOUT) {
-            need_stop = true;
-            ROS_DEBUG_THROTTLE(1.0, "Velocity command timeout, stopping robot");
-        }
-
-        if ((current_time - safety_control.last_odom_time).toSec() > safety_control.ODOM_TIMEOUT) {
-            need_stop = true;
-            safety_control.odom_healthy = false;
-            ROS_DEBUG_THROTTLE(1.0, "Odometry timeout, stopping robot");
-        }
-
-        if (!safety_control.odom_healthy) {
-            need_stop = true;
-        }
-
-        // 更新速度命令
-        {
-            std::lock_guard<std::mutex> lock(cmd_mutex);
-            if (need_stop) {
-                vel_msg.data[1] = 0;
-                vel_msg.data[2] = 0;
-                vel_msg.data[3] = 0;
-            } else if (latest_cmd.updated) {
-                vel_msg.data[1] = static_cast<int32_t>(latest_cmd.linear_x * 1000);
-                vel_msg.data[2] = static_cast<int32_t>(latest_cmd.angular_z * 1000000);
-                vel_msg.data[3] = static_cast<int32_t>(latest_cmd.linear_y * 1000);
-                latest_cmd.updated = false;
-            }
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(query_mutex);
-            if (latest_cmd.updated || need_stop) {  // 只在需要时发送
-                query_pub.publish(vel_msg);
-                ros::Duration(0.002).sleep();  // 添加小延时
-            }
-        }
-
-        rate.sleep();
-    }
-}
-
 int main(int argc, char** argv) {
     ros::init(argc, argv, "amr_ros_bridge");
     ros::NodeHandle nh;
@@ -309,11 +208,7 @@ int main(int argc, char** argv) {
     init_msg.data[18] = 995;  // ω
     init_msg.data[19] = 996;  // Vy
 
-    {
-        std::lock_guard<std::mutex> lock(query_mutex);
-        query_pub.publish(init_msg);
-    }
-
+    query_pub.publish(init_msg);
     ros::Duration(1.0).sleep();
     ROS_INFO("AMR ROS Bridge initialized successfully");
 
@@ -321,15 +216,68 @@ int main(int argc, char** argv) {
     safety_control.last_cmd_time = ros::Time::now();
     safety_control.last_odom_time = ros::Time::now();
 
-    // 启动线程
-    std::thread vel_thread(velocityControlThread);
-    stateQueryThread();
+    // 配置查询消息
+    query_msg.slave_id = 0x01;
+    query_msg.func_code = 2;
+    query_msg.read_addr = REG_ODOM_START;
+    query_msg.read_num = 9;
+    query_msg.write_addr = REG_VEL_START;
+    query_msg.write_num = 4;
 
-    // 清理
-    is_running = false;
-    if(vel_thread.joinable()) {
-        vel_thread.join();
+    for(int i = 0; i < 64; i++) {
+        query_msg.data[i] = 0;
     }
+    query_msg.data[0] = 1;  // 使能
+
+    // 主循环
+    ros::Rate rate(20);  // 20Hz
+    while(ros::ok()) {
+        ros::Time current_time = ros::Time::now();
+        bool need_stop = false;
+
+        // 安全检查
+        if ((current_time - safety_control.last_cmd_time).toSec() > safety_control.CMD_TIMEOUT) {
+            need_stop = true;
+            ROS_DEBUG_THROTTLE(1.0, "Velocity command timeout, stopping robot");
+        }
+
+        if ((current_time - safety_control.last_odom_time).toSec() > safety_control.ODOM_TIMEOUT) {
+            need_stop = true;
+            safety_control.odom_healthy = false;
+            ROS_DEBUG_THROTTLE(1.0, "Odometry timeout, stopping robot");
+        }
+
+        // 更新速度命令
+        {
+            std::lock_guard<std::mutex> lock(cmd_mutex);
+            if (need_stop) {
+                query_msg.data[1] = 0;
+                query_msg.data[2] = 0;
+                query_msg.data[3] = 0;
+            } else if (latest_cmd.updated) {
+                query_msg.data[1] = static_cast<int32_t>(latest_cmd.linear_x * 1000);
+                query_msg.data[2] = static_cast<int32_t>(latest_cmd.angular_z * 1000000);
+                query_msg.data[3] = static_cast<int32_t>(latest_cmd.linear_y * 1000);
+                latest_cmd.updated = false;
+            }
+        }
+
+        // 发送查询消息
+        query_pub.publish(query_msg);
+
+        // 发布数据
+        publishOdomAndTf(current_time);
+        publishImu(current_time);
+
+        ros::spinOnce();
+        rate.sleep();
+    }
+
+    // 确保停止
+    query_msg.data[1] = 0;
+    query_msg.data[2] = 0;
+    query_msg.data[3] = 0;
+    query_pub.publish(query_msg);
 
     return 0;
 }
