@@ -3,7 +3,7 @@
 AmrRosBridge::AmrRosBridge(ros::NodeHandle& nh) : nh_(nh) {
     loadParameters();
 
-    // 延迟初始化发布器和订阅器，等待Modbus主节点准备就绪
+    // 延迟初始化以等待其他节点就绪
     ros::Duration(1.0).sleep();
 
     query_pub_ = nh_.advertise<om_modbus_master::om_query>("om_query1", 1);
@@ -102,27 +102,53 @@ bool AmrRosBridge::init() {
 
 void AmrRosBridge::cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
     if (!running_) {
-        ROS_WARN_THROTTLE(1.0, "AMR ROS Bridge not running, ignoring cmd_vel");
+        ROS_WARN_THROTTLE(1.0, "AMR ROS Bridge not running");
+        return;
+    }
+
+    static ros::Time last_cmd_time = ros::Time::now();
+    ros::Time current = ros::Time::now();
+
+    // 限制命令发送频率
+    if ((current - last_cmd_time).toSec() < 0.05) {
         return;
     }
 
     // 发送速度指令
     om_modbus_master::om_query cmd_msg;
     cmd_msg.slave_id = 0x01;
-    cmd_msg.func_code = 1;
+    cmd_msg.func_code = 1;  // 写入功能码
     cmd_msg.write_addr = 4960;
     cmd_msg.write_num = 4;
+
+    // 确保数据数组清空
+    for(int i = 0; i < 64; i++) {
+        cmd_msg.data[i] = 0;
+    }
 
     // 限制速度并转换单位
     cmd_msg.data[0] = 1;  // 使能
     cmd_msg.data[1] = static_cast<int32_t>(
-        std::clamp(msg->linear.x, -MAX_LINEAR_VEL, MAX_LINEAR_VEL) * 1000);  // mm/s
+        std::clamp(msg->linear.x, -MAX_LINEAR_VEL, MAX_LINEAR_VEL) * 1000);
     cmd_msg.data[2] = static_cast<int32_t>(
-        std::clamp(msg->angular.z, -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL) * 1000000);  // μrad/s
+        std::clamp(msg->angular.z, -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL) * 1000000);
     cmd_msg.data[3] = static_cast<int32_t>(
-        std::clamp(msg->linear.y, -MAX_LINEAR_VEL, MAX_LINEAR_VEL) * 1000);  // mm/s
+        std::clamp(msg->linear.y, -MAX_LINEAR_VEL, MAX_LINEAR_VEL) * 1000);
 
-    query_pub_.publish(cmd_msg);
+    if (!busy_) {
+        query_pub_.publish(cmd_msg);
+        last_cmd_time = current;
+        busy_ = true;  // 设置忙碌标志
+
+        // 使用定时器在一定时间后重置忙碌状态
+        ros::Timer timer = nh_.createTimer(
+            ros::Duration(0.05),  // 50ms超时
+            [this](const ros::TimerEvent&) {
+                this->busy_ = false;
+            },
+            true  // 一次性定时器
+        );
+    }
 }
 
 void AmrRosBridge::run() {
@@ -132,33 +158,43 @@ void AmrRosBridge::run() {
     }
 
     ros::Rate rate(update_rate_);
-    ros::Time last_cmd_time = ros::Time::now();
+    ros::Time last_query_time = ros::Time::now();
 
     while (ros::ok() && running_) {
         try {
-            // 检查是否需要发送新的查询
             ros::Time current_time = ros::Time::now();
-            if ((current_time - last_cmd_time).toSec() >= (1.0 / update_rate_)) {
-                // 读取里程计和IMU数据
-                om_modbus_master::om_query query_msg;
-                query_msg.slave_id = 0x01;
-                query_msg.func_code = 2;
-                query_msg.read_addr = 4928;
-                query_msg.read_num = 9;
-                query_msg.write_addr = 4960;
-                query_msg.write_num = 4;
 
-                // 清空数据数组
-                for(int i = 0; i < 64; i++) {
-                    query_msg.data[i] = 0;
-                }
-                query_msg.data[0] = 1;  // 使能位
-
+            // 定期查询里程计和IMU数据
+            if ((current_time - last_query_time).toSec() >= (1.0 / update_rate_)) {
                 if (!busy_) {
-                    query_pub_.publish(query_msg);
-                    last_cmd_time = current_time;
-                }
+                    // 读取里程计和IMU数据
+                    om_modbus_master::om_query query_msg;
+                    query_msg.slave_id = 0x01;
+                    query_msg.func_code = 2;  // 读取功能码
+                    query_msg.read_addr = 4928;
+                    query_msg.read_num = 9;
+                    query_msg.write_addr = 4960;
+                    query_msg.write_num = 4;
 
+                    // 清空数据数组
+                    for(int i = 0; i < 64; i++) {
+                        query_msg.data[i] = 0;
+                    }
+                    query_msg.data[0] = 1;  // 使能位
+
+                    query_pub_.publish(query_msg);
+                    last_query_time = current_time;
+                    busy_ = true;
+
+                    // 使用定时器在一定时间后重置忙碌状态
+                    ros::Timer timer = nh_.createTimer(
+                        ros::Duration(0.05),  // 50ms超时
+                        [this](const ros::TimerEvent&) {
+                            this->busy_ = false;
+                        },
+                        true  // 一次性定时器
+                    );
+                }
                 publishOdomAndTf(current_time);
                 publishImu(current_time);
             }
@@ -168,6 +204,7 @@ void AmrRosBridge::run() {
         }
         catch (const std::exception& e) {
             ROS_ERROR_THROTTLE(1.0, "Error in main loop: %s", e.what());
+            busy_ = false;  // 发生错误时重置忙碌状态
         }
     }
 }
@@ -182,7 +219,7 @@ void AmrRosBridge::responseCallback(
 
     std::lock_guard<std::mutex> lock(data_mutex_);
 
-    // 更新里程计数据 (mm -> m, μrad -> rad)
+    // 更新里程计数据
     odom_data_.x = msg->data[0] / 1000.0;
     odom_data_.y = msg->data[1] / 1000.0;
     odom_data_.yaw = msg->data[2] / 1000000.0;
@@ -195,7 +232,7 @@ void AmrRosBridge::responseCallback(
     imu_data_.gyro_y = msg->data[7] * GYRO_SCALE;
     imu_data_.gyro_z = msg->data[8] * GYRO_SCALE;
 
-    busy_ = false;
+    busy_ = false;  // 收到响应后重置忙碌状态
 }
 
 void AmrRosBridge::stateCallback(const om_modbus_master::om_state::ConstPtr& msg) {
