@@ -16,30 +16,66 @@ AmrRosBridge::ModbusHandler::ModbusHandler(ros::NodeHandle& nh) {
 }
 
 bool AmrRosBridge::ModbusHandler::init() {
-    // 初始化从站
+    int retry_count = 0;
+    const int MAX_INIT_RETRY = 5;
+    const double RETRY_DELAY = 1.0;  // 秒
+
+    ROS_INFO("Initializing Modbus communication...");
+
+    // 等待节点和话题准备就绪
+    ros::Duration(0.5).sleep();  // 给ROS节点一些启动时间
+
+    // 检查发布器和订阅器是否正确创建
+    if (!query_pub_ || query_pub_.getNumSubscribers() == 0) {
+        ROS_WARN("Waiting for Modbus master node to connect...");
+        ros::Duration(1.0).sleep();  // 再给一些时间等待连接
+    }
+
+    // 发送初始化查询
     om_modbus_master::om_query init_msg;
-    init_msg.slave_id = 0x01;
-    init_msg.func_code = 1;     // 写入功能
-    init_msg.write_addr = 124;  // 驱动器输入命令地址
-    init_msg.write_num = 1;     // 写入1个32位数据
-    init_msg.data[0] = 0;       // 初始化为0
+    init_msg.slave_id = 0x01;    // 目标从站ID
+    init_msg.func_code = 0;      // 读取功能
+    init_msg.read_addr = 4928;   // 状态寄存器地址
+    init_msg.read_num = 1;       // 读取一个寄存器
+    init_msg.write_num = 0;
 
-    int retry = 0;
-    while (retry < MAX_RETRY) {
+    while (retry_count < MAX_INIT_RETRY && ros::ok()) {
+        ROS_INFO("Attempting to initialize Modbus communication (%d/%d)...",
+                 retry_count + 1, MAX_INIT_RETRY);
+
+        busy_ = true;
+        error_ = 0;
+
+        // 发送查询
         query_pub_.publish(init_msg);
-        ros::Duration(0.1).sleep();  // 等待响应
 
-        if (!busy_ && error_ == 0) {
-            ROS_INFO("Modbus通信初始化成功");
+        // 等待响应
+        ros::Time start_time = ros::Time::now();
+        bool got_response = false;
+
+        while (ros::Time::now() - start_time < ros::Duration(TIMEOUT)) {
+            ros::spinOnce();  // 处理回调
+            if (!busy_ && error_ == 0) {
+                got_response = true;
+                break;
+            }
+            ros::Duration(0.01).sleep();
+        }
+
+        if (got_response) {
+            ROS_INFO("Modbus communication initialized successfully");
             return true;
         }
 
-        ROS_WARN("Modbus初始化重试 %d/%d", retry + 1, MAX_RETRY);
-        retry++;
-        ros::Duration(1.0).sleep();
+        retry_count++;
+        if (retry_count < MAX_INIT_RETRY) {
+            ROS_WARN("Modbus initialization failed, retrying in %d seconds...",
+                    static_cast<int>(RETRY_DELAY));
+            ros::Duration(RETRY_DELAY).sleep();
+        }
     }
 
-    ROS_ERROR("Modbus通信初始化失败");
+    ROS_ERROR("Modbus communication initialization failed");
     return false;
 }
 
@@ -89,21 +125,42 @@ bool AmrRosBridge::ModbusHandler::sendCommand(const Command& cmd) {
 void AmrRosBridge::ModbusHandler::handleResponse(
     const om_modbus_master::om_response::ConstPtr& msg) {
 
-    if (msg->slave_id != 0x01) {
-        return;  // 不是目标从站的响应
+    if (!msg) {
+        ROS_ERROR("Received empty Modbus response");
+        error_ = 1;
+        busy_ = false;
+        return;
     }
 
-    busy_ = false;
+    // 检查响应的从站ID
+    if (msg->slave_id != 0x01) {
+        // 这可能是其他设备的响应，忽略它
+        return;
+    }
+
+    // 检查功能码（如果有错误，功能码会有最高位置1）
+    if (msg->func_code & 0x80) {
+        ROS_ERROR("Modbus device returned an error, function code: 0x%02X", msg->func_code);
+        error_ = 2;
+        busy_ = false;
+        return;
+    }
+
+    // 处理成功的响应
     error_ = 0;
+    busy_ = false;
 }
 
 void AmrRosBridge::ModbusHandler::handleState(
     const om_modbus_master::om_state::ConstPtr& msg) {
 
-    error_ = msg->state_error;
-    if (error_ != 0) {
-        ROS_WARN("Modbus通信错误代码: %d", error_);
+    if (!msg) return;
+
+    if (msg->state_error != 0) {
+        ROS_WARN("Modbus communication state error: %d", msg->state_error);
     }
+
+    error_ = msg->state_error;
 }
 
 // OdometryHandler实现
@@ -126,7 +183,7 @@ void AmrRosBridge::OdometryHandler::updateOdometry(
 
     // 检查数据有效性
     if (data.size() < 3) {
-        ROS_WARN_THROTTLE(1.0, "里程计数据不完整");
+        ROS_WARN_THROTTLE(1.0, "Incomplete odometry data");
         return;
     }
 
@@ -264,7 +321,7 @@ void AmrRosBridge::ImuHandler::updateImu(
     std::lock_guard<std::mutex> lock(data_mutex_);
 
     if (data.size() < 6) {
-        ROS_WARN_THROTTLE(1.0, "IMU数据不完整");
+        ROS_WARN_THROTTLE(1.0, "Incomplete IMU data");
         return;
     }
 
@@ -338,7 +395,7 @@ void AmrRosBridge::ImuHandler::publish(const ros::Time& time) {
 AmrRosBridge::AmrRosBridge(ros::NodeHandle& nh) : nh_(nh) {
     // 加载参数
     if (!loadParameters()) {
-        throw std::runtime_error("参数加载失败");
+        throw std::runtime_error("Failed to load parameters");
     }
 
     // 创建各个处理器
@@ -352,7 +409,7 @@ AmrRosBridge::AmrRosBridge(ros::NodeHandle& nh) : nh_(nh) {
     cmd_vel_sub_ = nh_.subscribe("cmd_vel", 1,
                                 &AmrRosBridge::cmdVelCallback, this);
 
-    ROS_INFO("AMR ROS Bridge已创建");
+    ROS_INFO("AMR ROS Bridge created");
 }
 
 AmrRosBridge::~AmrRosBridge() {
@@ -363,7 +420,7 @@ bool AmrRosBridge::loadParameters() {
     // 加载更新频率
     nh_.param<double>("update_rate", config_.update_rate, 50.0);
     if (config_.update_rate <= 0 || config_.update_rate > 200) {
-        ROS_WARN("无效的更新频率(%.1f), 使用默认值: %.1f Hz",
+        ROS_WARN("Invalid update rate (%.1f), using default: %.1f Hz",
                  config_.update_rate, 50.0);
         config_.update_rate = 50.0;
     }
@@ -388,45 +445,63 @@ bool AmrRosBridge::loadParameters() {
     nh_.param<std::string>("odom_frame", odom_frame_id_, "odom");
     nh_.param<std::string>("imu_frame", imu_frame_id_, "imu_link");
 
-    ROS_INFO("参数加载完成:");
-    ROS_INFO("- 主循环频率: %.1f Hz", config_.update_rate);
-    ROS_INFO("- 里程计频率: %.1f Hz", config_.odom_rate);
-    ROS_INFO("- IMU频率: %.1f Hz", config_.imu_rate);
-    ROS_INFO("- 最大线速度: %.2f m/s", config_.max_linear_vel);
-    ROS_INFO("- 最大角速度: %.2f rad/s", config_.max_angular_vel);
-    ROS_INFO("- 坐标系配置:");
-    ROS_INFO("  - 基座: %s", base_frame_id_.c_str());
-    ROS_INFO("  - 里程计: %s", odom_frame_id_.c_str());
+    ROS_INFO("Parameters loaded:");
+    ROS_INFO("- Main loop rate: %.1f Hz", config_.update_rate);
+    ROS_INFO("- Odometry rate: %.1f Hz", config_.odom_rate);
+    ROS_INFO("- IMU rate: %.1f Hz", config_.imu_rate);
+    ROS_INFO("- Max linear velocity: %.2f m/s", config_.max_linear_vel);
+    ROS_INFO("- Max angular velocity: %.2f rad/s", config_.max_angular_vel);
+    ROS_INFO("- Frame configuration:");
+    ROS_INFO("  - Base: %s", base_frame_id_.c_str());
+    ROS_INFO("  - Odometry: %s", odom_frame_id_.c_str());
     ROS_INFO("  - IMU: %s", imu_frame_id_.c_str());
 
     return true;
 }
 
 bool AmrRosBridge::init() {
-    ROS_INFO("正在初始化AMR ROS Bridge...");
+    ROS_INFO("Initializing AMR ROS Bridge...");
 
-    // 初始化Modbus通信
-    if (!modbus_->init()) {
-        ROS_ERROR("Modbus通信初始化失败");
+    // 1. 首先加载并验证参数
+    if (!loadParameters()) {
+        ROS_ERROR("Failed to load parameters");
         return false;
     }
 
-    // 验证通信
+    // 2. 等待ROS系统就绪
+    ros::Duration(0.5).sleep();
+
+    // 3. 初始化Modbus通信
+    if (!modbus_ || !modbus_->init()) {
+        ROS_ERROR("Modbus communication initialization failed");
+        return false;
+    }
+
+    // 4. 验证通信
     ModbusHandler::Command test_cmd;
     test_cmd.slave_id = 0x01;
-    test_cmd.func_code = 0;
-    test_cmd.addr = 4928;
-    test_cmd.data_num = 1;
+    test_cmd.func_code = 0;      // 读取功能
+    test_cmd.addr = 4928;        // 状态寄存器地址
+    test_cmd.data_num = 1;       // 读取一个寄存器
     test_cmd.type = ModbusHandler::CmdType::READ;
 
-    if (!modbus_->sendCommand(test_cmd)) {
-        ROS_ERROR("Modbus通信测试失败");
-        return false;
+    int verify_retry = 0;
+    const int MAX_VERIFY_RETRY = 3;
+
+    while (verify_retry < MAX_VERIFY_RETRY) {
+        if (modbus_->sendCommand(test_cmd)) {
+            ROS_INFO("AMR ROS Bridge initialized successfully");
+            running_ = true;
+            return true;
+        }
+        ROS_WARN("Communication verification failed, retrying... (%d/%d)",
+                 verify_retry + 1, MAX_VERIFY_RETRY);
+        ros::Duration(1.0).sleep();
+        verify_retry++;
     }
 
-    running_ = true;
-    ROS_INFO("AMR ROS Bridge初始化成功");
-    return true;
+    ROS_ERROR("AMR ROS Bridge initialization failed: Unable to verify Modbus communication");
+    return false;
 }
 
 void AmrRosBridge::cmdVelCallback(
@@ -440,13 +515,13 @@ void AmrRosBridge::cmdVelCallback(
     // 立即发送速度命令
     auto cmd = odom_->getWriteCommand();
     if (!modbus_->sendCommand(cmd)) {
-        ROS_WARN_THROTTLE(1.0, "速度指令发送失败");
+        ROS_WARN_THROTTLE(1.0, "Failed to send velocity command");
     }
 }
 
 void AmrRosBridge::run() {
     if (!running_) {
-        ROS_WARN("AMR ROS Bridge未初始化");
+        ROS_WARN("AMR ROS Bridge not initialized");
         return;
     }
 
@@ -457,7 +532,7 @@ void AmrRosBridge::run() {
     ros::Time last_odom_time = ros::Time::now();
     ros::Time last_imu_time = ros::Time::now();
 
-    ROS_INFO("AMR ROS Bridge开始运行, 频率: %.1f Hz", config_.update_rate);
+    ROS_INFO("AMR ROS Bridge running, rate: %.1f Hz", config_.update_rate);
 
     while (ros::ok() && running_) {
         ros::Time current = ros::Time::now();
@@ -494,7 +569,7 @@ void AmrRosBridge::run() {
 void AmrRosBridge::shutdown() {
     if (!running_) return;
 
-    ROS_INFO("正在关闭AMR ROS Bridge...");
+    ROS_INFO("Shutting down AMR ROS Bridge...");
     running_ = false;
 
     // 发送停止命令
@@ -507,11 +582,11 @@ void AmrRosBridge::shutdown() {
     stop_cmd.type = ModbusHandler::CmdType::WRITE;
 
     if (!modbus_->sendCommand(stop_cmd)) {
-        ROS_WARN("停止命令发送失败");
+        ROS_WARN("Failed to send stop command");
     }
 
     ros::Duration(0.1).sleep();  // 等待命令执行
-    ROS_INFO("AMR ROS Bridge已关闭");
+    ROS_INFO("AMR ROS Bridge shutdown complete");
 }
 
 // 主函数
@@ -523,14 +598,14 @@ int main(int argc, char** argv) {
         AmrRosBridge bridge(nh);
 
         if (!bridge.init()) {
-            ROS_ERROR("AMR ROS Bridge初始化失败");
+            ROS_ERROR("AMR ROS Bridge initialization failed");
             return 1;
         }
 
         bridge.run();
     }
     catch (const std::exception& e) {
-        ROS_ERROR("AMR ROS Bridge异常: %s", e.what());
+        ROS_ERROR("AMR ROS Bridge exception: %s", e.what());
         return 1;
     }
 
