@@ -60,8 +60,12 @@ public:
         struct Command {
             uint8_t slave_id{0x01};      // 从站ID
             uint8_t func_code{0};        // 功能码
-            uint32_t addr{0};            // 地址
-            uint8_t data_num{0};         // 数据数量
+            uint32_t addr{0};            // 地址(用于单独读写)
+            uint32_t read_addr{0};       // 读取地址
+            uint32_t write_addr{0};      // 写入地址
+            uint8_t data_num{0};         // 数据数量(用于单独读写)
+            uint8_t read_num{0};         // 读取数量
+            uint8_t write_num{0};        // 写入数量
             int32_t data[64]{};          // 数据
             ros::Time timestamp;         // 时间戳
             CmdType type{CmdType::READ}; // 命令类型

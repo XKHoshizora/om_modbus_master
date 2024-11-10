@@ -96,10 +96,20 @@ bool AmrRosBridge::ModbusHandler::sendCommand(const Command& cmd) {
             break;
 
         case CmdType::WRITE:
-            msg.write_addr = cmd.addr;
-            msg.write_num = cmd.data_num;
-            for (int i = 0; i < cmd.data_num; i++) {
-                msg.data[i] = cmd.data[i];
+            if (cmd.func_code == 2) {  // Read & Write
+                msg.read_addr = cmd.read_addr;
+                msg.read_num = cmd.read_num;
+                msg.write_addr = cmd.write_addr;
+                msg.write_num = cmd.write_num;
+                for (int i = 0; i < cmd.write_num; i++) {
+                    msg.data[i] = cmd.data[i];
+                }
+            } else {  // Write only
+                msg.write_addr = cmd.addr;
+                msg.write_num = cmd.data_num;
+                for (int i = 0; i < cmd.data_num; i++) {
+                    msg.data[i] = cmd.data[i];
+                }
             }
             break;
 
@@ -243,15 +253,17 @@ AmrRosBridge::OdometryHandler::getWriteCommand() {
 
     ModbusHandler::Command cmd;
     cmd.slave_id = 0x01;
-    cmd.func_code = 1;  // 写入功能
-    cmd.addr = VEL_REG_ADDR;
-    cmd.data_num = 4;
+    cmd.func_code = 2;       // Read & Write功能
+    cmd.read_addr = 4928;    // 0x1340 读取地址
+    cmd.read_num = 9;        // 读取9个数据(odom + imu)
+    cmd.write_addr = 4960;   // 0x1360 写入地址
+    cmd.write_num = 4;       // 写入4个数据
 
-    // 转换单位：m/s -> mm/s, rad/s -> μrad/s
-    cmd.data[0] = 1;    // 运行模式
-    cmd.data[1] = static_cast<int32_t>(velocity_.linear_x * 1000.0);
-    cmd.data[2] = static_cast<int32_t>(velocity_.angular_z * 1000000.0);
-    cmd.data[3] = static_cast<int32_t>(velocity_.linear_y * 1000.0);
+    // 数据打包
+    cmd.data[0] = 1;    // 运转模式
+    cmd.data[1] = static_cast<int32_t>(velocity_.linear_x * 1000.0);   // Vx [mm/s]
+    cmd.data[2] = static_cast<int32_t>(velocity_.angular_z * 1000000.0); // ω [μrad/s]
+    cmd.data[3] = static_cast<int32_t>(velocity_.linear_y * 1000.0);   // Vy [mm/s]
 
     cmd.type = ModbusHandler::CmdType::WRITE;
     return cmd;
@@ -481,13 +493,50 @@ bool AmrRosBridge::init() {
         return false;
     }
 
+    // 3.1 配置间接引用地址映射
+    ModbusHandler::Command addr_map_cmd;
+    addr_map_cmd.slave_id = 0x01;
+    addr_map_cmd.func_code = 1;  // Write
+    addr_map_cmd.addr = 4864;    // 0x1300 间接参照地址设定
+    addr_map_cmd.data_num = 32;
+
+    // 配置监控数据地址映射
+    addr_map_cmd.data[0] = 1069;  // 里程计X
+    addr_map_cmd.data[1] = 1070;  // 里程计Y
+    addr_map_cmd.data[2] = 1071;  // 里程计θ
+    addr_map_cmd.data[3] = 1038;  // 加速度X(IMU)
+    addr_map_cmd.data[4] = 1039;  // 加速度Y(IMU)
+    addr_map_cmd.data[5] = 1040;  // 加速度Z(IMU)
+    addr_map_cmd.data[6] = 1041;  // 角速度Roll(IMU)
+    addr_map_cmd.data[7] = 1042;  // 角速度Pitch(IMU)
+    addr_map_cmd.data[8] = 1043;  // 角速度Yaw(IMU)
+    addr_map_cmd.data[16] = 993;  // 运转模式
+    addr_map_cmd.data[17] = 994;  // Vx速度
+    addr_map_cmd.data[18] = 995;  // 角速度ω
+    addr_map_cmd.data[19] = 996;  // Vy速度
+
+    addr_map_cmd.type = ModbusHandler::CmdType::WRITE;
+
+    if (!modbus_->sendCommand(addr_map_cmd)) {
+        ROS_ERROR("Failed to configure address mapping");
+        return false;
+    }
+
+    ros::Duration(0.1).sleep();  // 等待配置生效
+
     // 4. 验证通信
     ModbusHandler::Command test_cmd;
     test_cmd.slave_id = 0x01;
-    test_cmd.func_code = 0;      // 读取功能
-    test_cmd.addr = 4928;        // 状态寄存器地址
-    test_cmd.data_num = 1;       // 读取一个寄存器
-    test_cmd.type = ModbusHandler::CmdType::READ;
+    test_cmd.func_code = 2;      // 改为读写功能码
+    test_cmd.read_addr = 4928;   // 读取地址
+    test_cmd.read_num = 9;       // 读取全部数据
+    test_cmd.write_addr = 4960;  // 写入地址
+    test_cmd.write_num = 4;      // 写入4个数据
+    test_cmd.data[0] = 0;        // 停止模式
+    test_cmd.data[1] = 0;        // Vx = 0
+    test_cmd.data[2] = 0;        // ω = 0
+    test_cmd.data[3] = 0;        // Vy = 0
+    test_cmd.type = ModbusHandler::CmdType::WRITE;
 
     int verify_retry = 0;
     const int MAX_VERIFY_RETRY = 5;
@@ -530,39 +579,20 @@ void AmrRosBridge::run() {
     }
 
     ros::Rate rate(config_.update_rate);
-    double odom_period = 1.0 / config_.odom_rate;
-    double imu_period = 1.0 / config_.imu_rate;
-
-    ros::Time last_odom_time = ros::Time::now();
-    ros::Time last_imu_time = ros::Time::now();
+    ros::Time last_update_time = ros::Time::now();
 
     ROS_INFO("AMR ROS Bridge running, rate: %.1f Hz", config_.update_rate);
 
     while (ros::ok() && running_) {
         ros::Time current = ros::Time::now();
 
-        // 读取里程计数据
-        if ((current - last_odom_time).toSec() >= odom_period) {
-            auto cmd = odom_->getReadCommand();
-            if (modbus_->sendCommand(cmd)) {
-                // TODO: 从响应中获取数据
-                std::vector<int32_t> odom_data(3, 0);
-                odom_->updateOdometry(odom_data);
-                odom_->publish(current);
-                last_odom_time = current;
-            }
-        }
-
-        // 读取IMU数据
-        if ((current - last_imu_time).toSec() >= imu_period) {
-            auto cmd = imu_->getReadCommand();
-            if (modbus_->sendCommand(cmd)) {
-                // TODO: 从响应中获取数据
-                std::vector<int32_t> imu_data(6, 0);
-                imu_->updateImu(imu_data);
-                imu_->publish(current);
-                last_imu_time = current;
-            }
+        // 发送速度命令并读取所有数据
+        auto cmd = odom_->getWriteCommand();  // 这个命令会读取所有数据并写入速度
+        if (modbus_->sendCommand(cmd)) {
+            // handleResponse中会更新数据
+            odom_->publish(current);
+            imu_->publish(current);
+            last_update_time = current;
         }
 
         ros::spinOnce();
