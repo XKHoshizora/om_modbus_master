@@ -5,7 +5,7 @@
  *           1. 接收cmd_vel命令并将其写入到Modbus设备
  *           2. 从Modbus设备读取里程计和IMU数据
  *           3. 发布里程计数据（odom话题和TF变换）
- *           4. 发布IMU数据（imu/data话题）
+ *           4. 发布原始IMU数据（imu话题）
  */
 
 #ifndef AMR_ROS_BRIDGE_HPP
@@ -109,15 +109,13 @@ private:
         std::mutex mutex_;
         std::string imu_frame_id_;
 
-        double acc_x_{0.0};
-        double acc_y_{0.0};
-        double acc_z_{0.0};
-        double gyro_x_{0.0};
-        double gyro_y_{0.0};
-        double gyro_z_{0.0};
-
-        static constexpr double ACC_SCALE = 0.001;   // 加速度转换因子
-        static constexpr double GYRO_SCALE = 0.000001; // 角速度转换因子
+        // 存储原始IMU数据
+        int32_t raw_acc_x_{0};
+        int32_t raw_acc_y_{0};
+        int32_t raw_acc_z_{0};
+        int32_t raw_gyro_x_{0};
+        int32_t raw_gyro_y_{0};
+        int32_t raw_gyro_z_{0};
     };
 
     // 主类成员
