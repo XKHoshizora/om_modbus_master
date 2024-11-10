@@ -5,6 +5,55 @@
 
 #include "om_modbus_master/amr_ros_bridge.hpp"
 
+// ImuHandler构造函数
+AmrRosBridge::ImuHandler::ImuHandler(ros::NodeHandle& nh, const std::string& imu_frame, const BridgeConfig& config)
+    : frame_id_(imu_frame), config_(config) {
+    imu_pub_ = nh.advertise<sensor_msgs::Imu>("imu", 50);
+}
+
+// updateImu方法实现
+void AmrRosBridge::ImuHandler::updateImu(const std::vector<int32_t>& data) {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+
+    // 数据解析示例（假设data包含加速度和角速度数据）
+    if (data.size() >= 6) {
+        imu_data_.acc_x = data[0] * ACC_SCALE;
+        imu_data_.acc_y = data[1] * ACC_SCALE;
+        imu_data_.acc_z = data[2] * ACC_SCALE;
+        imu_data_.gyro_x = data[3] * GYRO_SCALE;
+        imu_data_.gyro_y = data[4] * GYRO_SCALE;
+        imu_data_.gyro_z = data[5] * GYRO_SCALE;
+    }
+}
+
+// publish方法实现
+void AmrRosBridge::ImuHandler::publish(const ros::Time& time) {
+    sensor_msgs::Imu imu_msg;
+    imu_msg.header.stamp = time;
+    imu_msg.header.frame_id = frame_id_;
+    imu_msg.linear_acceleration.x = imu_data_.acc_x;
+    imu_msg.linear_acceleration.y = imu_data_.acc_y;
+    imu_msg.linear_acceleration.z = imu_data_.acc_z;
+    imu_msg.angular_velocity.x = imu_data_.gyro_x;
+    imu_msg.angular_velocity.y = imu_data_.gyro_y;
+    imu_msg.angular_velocity.z = imu_data_.gyro_z;
+
+    imu_pub_.publish(imu_msg);
+}
+
+// OdometryHandler::getWriteCommand方法实现
+AmrRosBridge::ModbusHandler::Command AmrRosBridge::OdometryHandler::getWriteCommand() {
+    Command cmd;
+    cmd.slave_id = 0x01;
+    cmd.func_code = 16; // 示例功能码
+    cmd.addr = VEL_REG_ADDR;
+    cmd.data_num = 4;
+    cmd.data[0] = static_cast<int32_t>(velocity_.linear_x * 1000); // 假设单位转换
+    cmd.data[1] = static_cast<int32_t>(velocity_.linear_y * 1000);
+    cmd.data[2] = static_cast<int32_t>(velocity_.angular_z * 1000);
+    return cmd;
+}
+
 // ModbusHandler类实现 - 处理Modbus协议的通信，包括发送命令和处理响应
 AmrRosBridge::ModbusHandler::ModbusHandler(ros::NodeHandle& nh,
                                            OdometryHandler* odom,
