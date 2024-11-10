@@ -14,6 +14,9 @@
 #include <geometry_msgs/Twist.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2/LinearMath/Quaternion.h>
+#include <thread>
+#include <atomic>
+#include <mutex>
 
 #include "om_modbus_master/om_query.h"
 #include "om_modbus_master/om_response.h"
@@ -30,7 +33,7 @@ std::string odom_frame = "odom";
 std::string base_frame = "base_footprint";
 std::string imu_frame = "imu_link";
 
-// 里程计和IMU数据
+// 机器人状态结构体
 struct RobotState {
     double odom_x = 0.0;
     double odom_y = 0.0;
@@ -43,7 +46,7 @@ struct RobotState {
     double gyro_z = 0.0;
 } robot_state;
 
-// 最新速度指令
+// 速度指令结构体
 struct VelocityCommand {
     double linear_x = 0.0;
     double linear_y = 0.0;
@@ -51,11 +54,15 @@ struct VelocityCommand {
     bool updated = false;
 } latest_cmd;
 
+std::mutex state_mutex;
+std::mutex cmd_mutex;
+std::atomic<bool> is_running{true};
+
 // 常量定义
-const double ACC_SCALE = 0.001;      // 加速度标定系数
-const double GYRO_SCALE = 0.000001;  // 角速度标定系数
-const double MAX_LINEAR_VEL = 2.0;   // 最大线速度(m/s)
-const double MAX_ANGULAR_VEL = 6.2;  // 最大角速度(rad/s)
+const double ACC_SCALE = 0.001;
+const double GYRO_SCALE = 0.000001;
+const double MAX_LINEAR_VEL = 2.0;
+const double MAX_ANGULAR_VEL = 6.2;
 
 // Modbus寄存器地址
 const uint16_t REG_MAP_START = 4864;
@@ -66,10 +73,10 @@ const uint16_t REG_VEL_START = 4960;
 void responseCallback(const om_modbus_master::om_response::ConstPtr& msg) {
     if (!msg || msg->data.size() < 9) return;
 
-    // 更新机器人状态
-    robot_state.odom_x = msg->data[0] / 1000.0;      // mm -> m
-    robot_state.odom_y = msg->data[1] / 1000.0;      // mm -> m
-    robot_state.odom_yaw = msg->data[2] / 1000000.0; // μrad -> rad
+    std::lock_guard<std::mutex> lock(state_mutex);
+    robot_state.odom_x = msg->data[0] / 1000.0;
+    robot_state.odom_y = msg->data[1] / 1000.0;
+    robot_state.odom_yaw = msg->data[2] / 1000000.0;
     robot_state.acc_x = msg->data[3] * ACC_SCALE;
     robot_state.acc_y = msg->data[4] * ACC_SCALE;
     robot_state.acc_z = msg->data[5] * ACC_SCALE;
@@ -80,6 +87,7 @@ void responseCallback(const om_modbus_master::om_response::ConstPtr& msg) {
 
 // 处理接收到的速度指令
 void cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
+    std::lock_guard<std::mutex> lock(cmd_mutex);
     latest_cmd.linear_x = std::clamp(msg->linear.x, -MAX_LINEAR_VEL, MAX_LINEAR_VEL);
     latest_cmd.linear_y = std::clamp(msg->linear.y, -MAX_LINEAR_VEL, MAX_LINEAR_VEL);
     latest_cmd.angular_z = std::clamp(msg->angular.z, -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL);
@@ -88,7 +96,8 @@ void cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
 
 // 发布里程计和TF数据
 void publishOdomAndTf(const ros::Time& time) {
-    // 创建并发布TF消息
+    std::lock_guard<std::mutex> lock(state_mutex);
+
     geometry_msgs::TransformStamped tf_msg;
     tf_msg.header.stamp = time;
     tf_msg.header.frame_id = odom_frame;
@@ -108,7 +117,6 @@ void publishOdomAndTf(const ros::Time& time) {
         tf_broadcaster_ptr->sendTransform(tf_msg);
     }
 
-    // 创建并发布里程计消息
     nav_msgs::Odometry odom_msg;
     odom_msg.header = tf_msg.header;
     odom_msg.child_frame_id = tf_msg.child_frame_id;
@@ -122,6 +130,8 @@ void publishOdomAndTf(const ros::Time& time) {
 
 // 发布IMU数据
 void publishImu(const ros::Time& time) {
+    std::lock_guard<std::mutex> lock(state_mutex);
+
     sensor_msgs::Imu imu_msg;
     imu_msg.header.stamp = time;
     imu_msg.header.frame_id = imu_frame;
@@ -135,11 +145,71 @@ void publishImu(const ros::Time& time) {
     imu_pub.publish(imu_msg);
 }
 
+// 速度控制线程
+void velocityControlThread() {
+    ros::Rate rate(50);  // 速度控制使用更高的频率
+    om_modbus_master::om_query vel_msg;
+
+    while(ros::ok() && is_running) {
+        vel_msg.slave_id = 0x01;
+        vel_msg.func_code = 1;
+        vel_msg.write_addr = REG_VEL_START;
+        vel_msg.write_num = 4;
+
+        for(int i = 0; i < 64; i++) {
+            vel_msg.data[i] = 0;
+        }
+
+        // 更新速度指令
+        vel_msg.data[0] = 1;  // 使能
+
+        {
+            std::lock_guard<std::mutex> lock(cmd_mutex);
+            if (latest_cmd.updated) {
+                vel_msg.data[1] = static_cast<int32_t>(latest_cmd.linear_x * 1000);
+                vel_msg.data[2] = static_cast<int32_t>(latest_cmd.angular_z * 1000000);
+                vel_msg.data[3] = static_cast<int32_t>(latest_cmd.linear_y * 1000);
+                latest_cmd.updated = false;
+            }
+        }
+
+        query_pub.publish(vel_msg);
+        rate.sleep();
+    }
+}
+
+// 状态查询线程（主线程）
+void stateQueryThread() {
+    ros::Rate rate(20);  // 状态查询保持20Hz
+    om_modbus_master::om_query query_msg;
+
+    while(ros::ok() && is_running) {
+        query_msg.slave_id = 0x01;
+        query_msg.func_code = 2;
+        query_msg.read_addr = REG_ODOM_START;
+        query_msg.read_num = 9;
+        query_msg.write_addr = 0;  // 不包含写操作
+        query_msg.write_num = 0;
+
+        for(int i = 0; i < 64; i++) {
+            query_msg.data[i] = 0;
+        }
+
+        query_pub.publish(query_msg);
+
+        ros::Time current_time = ros::Time::now();
+        publishOdomAndTf(current_time);
+        publishImu(current_time);
+
+        ros::spinOnce();
+        rate.sleep();
+    }
+}
+
 int main(int argc, char** argv) {
     ros::init(argc, argv, "amr_ros_bridge");
     ros::NodeHandle nh;
 
-    // 创建TF广播器
     tf2_ros::TransformBroadcaster tf_broadcaster;
     tf_broadcaster_ptr = &tf_broadcaster;
 
@@ -149,13 +219,6 @@ int main(int argc, char** argv) {
     imu_pub = nh.advertise<sensor_msgs::Imu>("imu", 50);
     ros::Subscriber response_sub = nh.subscribe("om_response1", 1, responseCallback);
     ros::Subscriber cmd_vel_sub = nh.subscribe("cmd_vel", 1, cmdVelCallback);
-
-    // 获取参数
-    double update_rate = 20.0;  // 默认50Hz
-    nh.param<double>("update_rate", update_rate, 20.0);
-    nh.param<std::string>("odom_frame", odom_frame, "odom");
-    nh.param<std::string>("base_frame", base_frame, "base_footprint");
-    nh.param<std::string>("imu_frame", imu_frame, "imu_link");
 
     ROS_INFO("Initializing AMR ROS Bridge...");
     ros::Duration(0.3).sleep();
@@ -167,12 +230,10 @@ int main(int argc, char** argv) {
     init_msg.write_addr = REG_MAP_START;
     init_msg.write_num = 32;
 
-    // 初始化数据数组
     for(int i = 0; i < 64; i++) {
         init_msg.data[i] = 0;
     }
 
-    // 配置寄存器映射关系
     init_msg.data[0] = 1069;  // 里程计X
     init_msg.data[1] = 1070;  // 里程计Y
     init_msg.data[2] = 1071;  // 里程计Theta
@@ -189,42 +250,19 @@ int main(int argc, char** argv) {
 
     query_pub.publish(init_msg);
     ros::Duration(0.3).sleep();
+
     ROS_INFO("AMR ROS Bridge initialized successfully");
 
-    // 主循环
-    ros::Rate rate(update_rate);
-    while(ros::ok()) {
-        // 准备查询消息
-        om_modbus_master::om_query query_msg;
-        query_msg.slave_id = 0x01;
-        query_msg.func_code = 2;
-        query_msg.read_addr = REG_ODOM_START;
-        query_msg.read_num = 9;
-        query_msg.write_addr = REG_VEL_START;
-        query_msg.write_num = 4;
+    // 启动速度控制线程
+    std::thread vel_thread(velocityControlThread);
 
-        // 初始化数据数组
-        for(int i = 0; i < 64; i++) {
-            query_msg.data[i] = 0;
-        }
+    // 在主线程中运行状态查询
+    stateQueryThread();
 
-        // 更新速度指令
-        query_msg.data[0] = 1;  // 使能
-        if (latest_cmd.updated) {
-            query_msg.data[1] = static_cast<int32_t>(latest_cmd.linear_x * 1000);
-            query_msg.data[2] = static_cast<int32_t>(latest_cmd.angular_z * 1000000);
-            query_msg.data[3] = static_cast<int32_t>(latest_cmd.linear_y * 1000);
-            latest_cmd.updated = false;
-        }
-
-        // 发送查询并更新数据
-        query_pub.publish(query_msg);
-        ros::Time current_time = ros::Time::now();
-        publishOdomAndTf(current_time);
-        publishImu(current_time);
-
-        ros::spinOnce();
-        rate.sleep();
+    // 清理
+    is_running = false;
+    if(vel_thread.joinable()) {
+        vel_thread.join();
     }
 
     return 0;
