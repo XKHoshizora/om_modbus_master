@@ -90,6 +90,9 @@ public:
 
         static constexpr int MAX_RETRY = 3;  // 最大重试次数
         static constexpr double TIMEOUT = 0.1; // 超时时间(s)
+
+        ros::Time last_busy_time_;  // 记录最后一次忙状态的开始时间
+        static constexpr double MIN_CMD_INTERVAL = 0.05;  // 最小命令间隔(20Hz)
     };
 
 private:

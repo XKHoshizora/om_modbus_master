@@ -80,9 +80,23 @@ bool AmrRosBridge::ModbusHandler::init() {
 }
 
 bool AmrRosBridge::ModbusHandler::sendCommand(const Command& cmd) {
+    std::lock_guard<std::mutex> lock(queue_mutex_);  // 加锁保护
+
     if (busy_) {
-        return false;
+        // 如果忙标志持续时间过长，强制重置
+        ros::Time current = ros::Time::now();
+        if ((current - last_busy_time_).toSec() > TIMEOUT) {
+            ROS_DEBUG("Reset busy flag due to timeout");
+            busy_ = false;
+            error_ = 0;
+        } else {
+            return false;
+        }
     }
+
+    busy_ = true;
+    last_busy_time_ = ros::Time::now();  // 记录开始忙的时间
+    error_ = 0;
 
     om_modbus_master::om_query msg;
     msg.slave_id = cmd.slave_id;
@@ -127,10 +141,16 @@ bool AmrRosBridge::ModbusHandler::sendCommand(const Command& cmd) {
     ros::Time start = ros::Time::now();
     while (busy_ && (ros::Time::now() - start).toSec() < TIMEOUT) {
         ros::spinOnce();
-        ros::Duration(0.001).sleep();  // 1ms
+        ros::Duration(0.001).sleep();
     }
 
-    return !busy_ && error_ == 0;
+    if (busy_) {  // 超时
+        busy_ = false;
+        error_ = 3;
+        return false;
+    }
+
+    return error_ == 0;
 }
 
 void AmrRosBridge::ModbusHandler::handleResponse(
@@ -559,17 +579,35 @@ bool AmrRosBridge::init() {
 
 void AmrRosBridge::cmdVelCallback(
     const geometry_msgs::Twist::ConstPtr& msg) {
-
     if (!running_) return;
+
+    static ros::Time last_cmd_time = ros::Time::now();
+    ros::Time current = ros::Time::now();
+
+    // 限制命令发送频率
+    if ((current - last_cmd_time).toSec() < 0.05) {  // 最高20Hz
+        return;
+    }
 
     // 更新里程计命令
     odom_->updateCommand(msg);
 
-    // 立即发送速度命令
+    // 发送速度命令
     auto cmd = odom_->getWriteCommand();
-    if (!modbus_->sendCommand(cmd)) {
-        ROS_WARN_THROTTLE(1.0, "Failed to send velocity command");
+    int retry_count = 0;
+    const int MAX_RETRY = 3;
+
+    while (retry_count < MAX_RETRY) {
+        if (modbus_->sendCommand(cmd)) {
+            last_cmd_time = current;
+            return;  // 成功发送
+        }
+        retry_count++;
+        ros::Duration(0.001).sleep();  // 短暂等待后重试
     }
+
+    // 只有多次重试都失败才输出警告
+    ROS_WARN_THROTTLE(1.0, "Failed to send velocity command after %d retries", MAX_RETRY);
 }
 
 void AmrRosBridge::run() {
