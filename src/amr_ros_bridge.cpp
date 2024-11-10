@@ -3,7 +3,9 @@
 AmrRosBridge::AmrRosBridge(ros::NodeHandle& nh) : nh_(nh) {
     loadParameters();
 
-    // 初始化发布器和订阅器
+    // 延迟初始化发布器和订阅器，等待Modbus主节点准备就绪
+    ros::Duration(1.0).sleep();
+
     query_pub_ = nh_.advertise<om_modbus_master::om_query>("om_query1", 1);
     odom_pub_ = nh_.advertise<nav_msgs::Odometry>("odom", 50);
     imu_pub_ = nh_.advertise<sensor_msgs::Imu>("imu", 50);
@@ -31,49 +33,71 @@ bool AmrRosBridge::loadParameters() {
 bool AmrRosBridge::init() {
     ROS_INFO("Initializing AMR ROS Bridge...");
 
-    // 设置寄存器映射
-    om_modbus_master::om_query init_msg;
-    init_msg.slave_id = 0x01;
-    init_msg.func_code = 1;
-    init_msg.write_addr = 4864;
-    init_msg.write_num = 32;
+    // 等待Modbus主节点启动
+    ros::Duration(2.0).sleep();
 
-    // 直接设置寄存器映射
-    init_msg.data[0] = 1069;  // 里程计X
-    init_msg.data[1] = 1070;  // 里程计Y
-    init_msg.data[2] = 1071;  // 里程计Theta
-    init_msg.data[3] = 1038;  // IMU加速度X
-    init_msg.data[4] = 1039;  // IMU加速度Y
-    init_msg.data[5] = 1040;  // IMU加速度Z
-    init_msg.data[6] = 1041;  // IMU角速度X
-    init_msg.data[7] = 1042;  // IMU角速度Y
-    init_msg.data[8] = 1043;  // IMU角速度Z
-    init_msg.data[16] = 993;  // 直接数据运行模式
-    init_msg.data[17] = 994;  // 前后平移速度(Vx)
-    init_msg.data[18] = 995;  // 角速度(ω)
-    init_msg.data[19] = 996;  // 左右平移速度(Vy)
+    // 检查Modbus主节点是否在线
+    if (query_pub_.getNumSubscribers() == 0) {
+        ROS_ERROR("Modbus master node not found. Please check if it's running.");
+        return false;
+    }
 
-    query_pub_.publish(init_msg);
-    ros::Duration(0.1).sleep();
+    try {
+        // 设置寄存器映射
+        om_modbus_master::om_query init_msg;
+        init_msg.slave_id = 0x01;
+        init_msg.func_code = 1;
+        init_msg.write_addr = 4864;
+        init_msg.write_num = 32;
 
-    // 初始化通信测试
-    om_modbus_master::om_query test_msg;
-    test_msg.slave_id = 0x01;
-    test_msg.func_code = 2;
-    test_msg.read_addr = 4928;
-    test_msg.read_num = 9;
-    test_msg.write_addr = 4960;
-    test_msg.write_num = 4;
-    test_msg.data[0] = 0;
-    test_msg.data[1] = 0;
-    test_msg.data[2] = 0;
-    test_msg.data[3] = 0;
+        // 清空数据数组
+        for(int i = 0; i < 64; i++) {
+            init_msg.data[i] = 0;
+        }
 
-    query_pub_.publish(test_msg);
-    ros::Duration(0.1).sleep();
+        // 设置寄存器映射
+        init_msg.data[0] = 1069;  // 里程计X
+        init_msg.data[1] = 1070;  // 里程计Y
+        init_msg.data[2] = 1071;  // 里程计Theta
+        init_msg.data[3] = 1038;  // IMU加速度X
+        init_msg.data[4] = 1039;  // IMU加速度Y
+        init_msg.data[5] = 1040;  // IMU加速度Z
+        init_msg.data[6] = 1041;  // IMU角速度X
+        init_msg.data[7] = 1042;  // IMU角速度Y
+        init_msg.data[8] = 1043;  // IMU角速度Z
+        init_msg.data[16] = 993;  // 直接数据运行模式
+        init_msg.data[17] = 994;  // 前后平移速度(Vx)
+        init_msg.data[18] = 995;  // 角速度(ω)
+        init_msg.data[19] = 996;  // 左右平移速度(Vy)
 
-    running_ = true;
-    return true;
+        query_pub_.publish(init_msg);
+        ros::Duration(0.5).sleep();
+
+        // 初始化通信测试
+        om_modbus_master::om_query test_msg;
+        test_msg.slave_id = 0x01;
+        test_msg.func_code = 2;
+        test_msg.read_addr = 4928;
+        test_msg.read_num = 9;
+        test_msg.write_addr = 4960;
+        test_msg.write_num = 4;
+
+        // 清空数据数组
+        for(int i = 0; i < 64; i++) {
+            test_msg.data[i] = 0;
+        }
+
+        query_pub_.publish(test_msg);
+        ros::Duration(0.5).sleep();
+
+        running_ = true;
+        ROS_INFO("AMR ROS Bridge initialized successfully");
+        return true;
+    }
+    catch (const std::exception& e) {
+        ROS_ERROR("Initialization failed: %s", e.what());
+        return false;
+    }
 }
 
 void AmrRosBridge::cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
@@ -108,30 +132,43 @@ void AmrRosBridge::run() {
     }
 
     ros::Rate rate(update_rate_);
+    ros::Time last_cmd_time = ros::Time::now();
+
     while (ros::ok() && running_) {
-        // 读取里程计和IMU数据
-        om_modbus_master::om_query query_msg;
-        query_msg.slave_id = 0x01;
-        query_msg.func_code = 2;
-        query_msg.read_addr = 4928;
-        query_msg.read_num = 9;
-        query_msg.write_addr = 4960;
-        query_msg.write_num = 4;
-        query_msg.data[0] = 1;
-        query_msg.data[1] = 0;
-        query_msg.data[2] = 0;
-        query_msg.data[3] = 0;
+        try {
+            // 检查是否需要发送新的查询
+            ros::Time current_time = ros::Time::now();
+            if ((current_time - last_cmd_time).toSec() >= (1.0 / update_rate_)) {
+                // 读取里程计和IMU数据
+                om_modbus_master::om_query query_msg;
+                query_msg.slave_id = 0x01;
+                query_msg.func_code = 2;
+                query_msg.read_addr = 4928;
+                query_msg.read_num = 9;
+                query_msg.write_addr = 4960;
+                query_msg.write_num = 4;
 
-        if (!busy_) {
-            query_pub_.publish(query_msg);
+                // 清空数据数组
+                for(int i = 0; i < 64; i++) {
+                    query_msg.data[i] = 0;
+                }
+                query_msg.data[0] = 1;  // 使能位
+
+                if (!busy_) {
+                    query_pub_.publish(query_msg);
+                    last_cmd_time = current_time;
+                }
+
+                publishOdomAndTf(current_time);
+                publishImu(current_time);
+            }
+
+            ros::spinOnce();
+            rate.sleep();
         }
-
-        ros::Time current = ros::Time::now();
-        publishOdomAndTf(current);
-        publishImu(current);
-
-        ros::spinOnce();
-        rate.sleep();
+        catch (const std::exception& e) {
+            ROS_ERROR_THROTTLE(1.0, "Error in main loop: %s", e.what());
+        }
     }
 }
 
