@@ -109,7 +109,12 @@ private:
         std::mutex mutex_;
         std::string imu_frame_id_;
 
-        // 存储原始IMU数据
+        // 加速度 [m/s²]
+        static constexpr double ACC_SCALE = 0.001;   // 1 = 0.001 [m/s²]
+        // 角速度 [rad/s]
+        static constexpr double GYRO_SCALE = 0.000001; // 1 = 0.000001 [rad/s]
+
+        // 存储原始数据
         int32_t raw_acc_x_{0};
         int32_t raw_acc_y_{0};
         int32_t raw_acc_z_{0};

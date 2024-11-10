@@ -183,7 +183,7 @@ void AmrRosBridge::ImuHandler::updateData(
     const om_modbus_master::om_response& msg) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // 直接保存原始数据
+    // 保存原始数据
     raw_acc_x_ = msg.data[3];
     raw_acc_y_ = msg.data[4];
     raw_acc_z_ = msg.data[5];
@@ -194,9 +194,13 @@ void AmrRosBridge::ImuHandler::updateData(
     // 添加调试输出
     static int debug_counter = 0;
     if (debug_counter++ % 100 == 0) {
-        ROS_DEBUG("Raw IMU Data - Acc[x,y,z]: [%d, %d, %d], Gyro[x,y,z]: [%d, %d, %d]",
-                 raw_acc_x_, raw_acc_y_, raw_acc_z_,
-                 raw_gyro_x_, raw_gyro_y_, raw_gyro_z_);
+        ROS_DEBUG("IMU Data - Acc[m/s²]: [%.3f, %.3f, %.3f], Gyro[rad/s]: [%.6f, %.6f, %.6f]",
+                raw_acc_x_ * ACC_SCALE,
+                raw_acc_y_ * ACC_SCALE,
+                raw_acc_z_ * ACC_SCALE,
+                raw_gyro_x_ * GYRO_SCALE,
+                raw_gyro_y_ * GYRO_SCALE,
+                raw_gyro_z_ * GYRO_SCALE);
     }
 }
 
@@ -207,16 +211,16 @@ void AmrRosBridge::ImuHandler::publish(const ros::Time& current_time) {
     imu.header.stamp = current_time;
     imu.header.frame_id = imu_frame_id_;
 
-    // 发布原始数据
-    imu.linear_acceleration.x = static_cast<double>(raw_acc_x_);
-    imu.linear_acceleration.y = static_cast<double>(raw_acc_y_);
-    imu.linear_acceleration.z = static_cast<double>(raw_acc_z_);
+    // 应用单位转换
+    imu.linear_acceleration.x = raw_acc_x_ * ACC_SCALE;  // [m/s²]
+    imu.linear_acceleration.y = raw_acc_y_ * ACC_SCALE;  // [m/s²]
+    imu.linear_acceleration.z = raw_acc_z_ * ACC_SCALE;  // [m/s²]
 
-    imu.angular_velocity.x = static_cast<double>(raw_gyro_x_);
-    imu.angular_velocity.y = static_cast<double>(raw_gyro_y_);
-    imu.angular_velocity.z = static_cast<double>(raw_gyro_z_);
+    imu.angular_velocity.x = raw_gyro_x_ * GYRO_SCALE;  // [rad/s]
+    imu.angular_velocity.y = raw_gyro_y_ * GYRO_SCALE;  // [rad/s]
+    imu.angular_velocity.z = raw_gyro_z_ * GYRO_SCALE;  // [rad/s]
 
-    // 设置为未知方向
+    // orientation保持未知
     imu.orientation.x = 0.0;
     imu.orientation.y = 0.0;
     imu.orientation.z = 0.0;
@@ -224,9 +228,9 @@ void AmrRosBridge::ImuHandler::publish(const ros::Time& current_time) {
 
     // 设置协方差
     for (int i = 0; i < 9; i++) {
-        imu.orientation_covariance[i] = -1;  // 表示没有方向数据
-        imu.angular_velocity_covariance[i] = 0.0;  // 表示使用原始数据
-        imu.linear_acceleration_covariance[i] = 0.0;  // 表示使用原始数据
+        imu.orientation_covariance[i] = -1;  // 表示没有orientation数据
+        imu.angular_velocity_covariance[i] = (i == 0 || i == 4 || i == 8) ? 0.01 : 0.0;
+        imu.linear_acceleration_covariance[i] = (i == 0 || i == 4 || i == 8) ? 0.01 : 0.0;
     }
 
     imu_pub_.publish(imu);
