@@ -266,12 +266,14 @@ void AmrRosBridge::modbusStateCallback(
 
 bool AmrRosBridge::setupModbusRegisters(om_modbus_master::om_query& msg) {
     msg.slave_id = 0x01;
-    msg.func_code = 1;
+    msg.func_code = 1;     // 写入功能
     msg.write_addr = 4864;
-    msg.write_num = 32;
+    msg.write_num = 20;    // 修改为实际需要写入的数据数量
+    msg.read_addr = 0;     // 初始化不需要读取
+    msg.read_num = 0;      // 初始化不需要读取
 
-    // 清空所有数据
-    for(int i = 0; i < 32; i++) {
+    // 初始化数据数组
+    for(int i = 0; i < 64; i++) {
         msg.data[i] = 0;
     }
 
@@ -341,16 +343,16 @@ void AmrRosBridge::run() {
         // 1. 处理运动命令 - 高优先级
         {
             std::lock_guard<std::mutex> lock(motion_mutex_);
-            if (pending_motion_command_) {
+            if (pending_motion_command_) {  // 检查是否有新的运动命令
                 motion_msg.slave_id = 0x01;
-                motion_msg.func_code = 2;
-                motion_msg.read_addr = 4928;
-                motion_msg.read_num = 9;
+                motion_msg.func_code = 1;  // 改为写入功能
                 motion_msg.write_addr = 4960;
                 motion_msg.write_num = 4;
+                motion_msg.read_addr = 0;  // 不需要读取
+                motion_msg.read_num = 0;   // 不需要读取
 
-                // 清空数据
-                for(int i = 0; i < 4; i++) {
+                // 初始化数据数组
+                for(int i = 0; i < 64; i++) {
                     motion_msg.data[i] = 0;
                 }
 
@@ -364,15 +366,16 @@ void AmrRosBridge::run() {
                     pending_motion_command_ = false;
                 }
             } else if (motion_command_sent) {
+                // 如果之前发送过运动命令，需要发送停止命令
                 motion_msg.slave_id = 0x01;
-                motion_msg.func_code = 2;
-                motion_msg.read_addr = 4928;
-                motion_msg.read_num = 9;
+                motion_msg.func_code = 1;  // 写入功能
                 motion_msg.write_addr = 4960;
                 motion_msg.write_num = 4;
+                motion_msg.read_addr = 0;
+                motion_msg.read_num = 0;
 
-                // 清空数据
-                for(int i = 0; i < 4; i++) {
+                // 初始化数据数组
+                for(int i = 0; i < 64; i++) {
                     motion_msg.data[i] = 0;
                 }
 
@@ -383,16 +386,16 @@ void AmrRosBridge::run() {
         }
 
         // 2. 处理状态更新 - 低优先级
-        if ((current_time - last_status_update).toSec() >= 0.05) {
+        if ((current_time - last_status_update).toSec() >= 0.05) {  // 20Hz
             status_msg.slave_id = 0x01;
-            status_msg.func_code = 2;
+            status_msg.func_code = 0;      // 读取功能
             status_msg.read_addr = 4928;
             status_msg.read_num = 9;
-            status_msg.write_addr = 4960;
-            status_msg.write_num = 0;  // 只读取，不写入
+            status_msg.write_addr = 0;     // 不需要写入
+            status_msg.write_num = 0;      // 不需要写入
 
-            // 清空数据
-            for(int i = 0; i < 9; i++) {
+            // 初始化数据数组
+            for(int i = 0; i < 64; i++) {
                 status_msg.data[i] = 0;
             }
 
