@@ -178,17 +178,19 @@ void stateQueryThread() {
     state_query_msg.func_code = 2;    // 读写功能码
     state_query_msg.read_addr = REG_ODOM_START;
     state_query_msg.read_num = 9;
-    state_query_msg.write_addr = 0;   // 不进行写操作
-    state_query_msg.write_num = 0;
+    state_query_msg.write_addr = REG_VEL_START;  // 还是需要保持这个地址
+    state_query_msg.write_num = 4;              // 还是需要保持这个数量
 
     for(int i = 0; i < 64; i++) {
         state_query_msg.data[i] = 0;
     }
+    state_query_msg.data[0] = 1;  // 依然需要使能
 
     while(ros::ok() && is_running) {
         {
             std::lock_guard<std::mutex> lock(query_mutex);
             query_pub.publish(state_query_msg);
+            ros::Duration(0.002).sleep();  // 添加小延时
         }
 
         ros::Time current_time = ros::Time::now();
@@ -209,8 +211,8 @@ void velocityControlThread() {
     vel_msg.func_code = 1;    // 写入功能码
     vel_msg.write_addr = REG_VEL_START;
     vel_msg.write_num = 4;
-    vel_msg.read_addr = 0;    // 不进行读操作
-    vel_msg.read_num = 0;
+    vel_msg.read_addr = REG_ODOM_START;  // 需要保持这个地址
+    vel_msg.read_num = 9;               // 需要保持这个数量
 
     for(int i = 0; i < 64; i++) {
         vel_msg.data[i] = 0;
@@ -254,7 +256,10 @@ void velocityControlThread() {
 
         {
             std::lock_guard<std::mutex> lock(query_mutex);
-            query_pub.publish(vel_msg);
+            if (latest_cmd.updated || need_stop) {  // 只在需要时发送
+                query_pub.publish(vel_msg);
+                ros::Duration(0.002).sleep();  // 添加小延时
+            }
         }
 
         rate.sleep();
