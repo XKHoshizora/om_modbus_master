@@ -102,7 +102,7 @@ void AmrRosBridge::ModbusHandler::handleState(
 
     error_ = msg->state_error;
     if (error_ != 0) {
-        ROS_WARN("Modbus通信错误: %d", error_);
+        ROS_WARN("Modbus通信错误代码: %d", error_);
     }
 }
 
@@ -110,8 +110,11 @@ void AmrRosBridge::ModbusHandler::handleState(
 AmrRosBridge::OdometryHandler::OdometryHandler(
     ros::NodeHandle& nh,
     const std::string& odom_frame,
-    const std::string& base_frame)
-    : odom_frame_id_(odom_frame), base_frame_id_(base_frame) {
+    const std::string& base_frame,
+    const BridgeConfig& config)
+    : odom_frame_id_(odom_frame),
+      base_frame_id_(base_frame),
+      config_(config) {
 
     odom_pub_ = nh.advertise<nav_msgs::Odometry>("odom", 50);
 }
@@ -150,10 +153,16 @@ void AmrRosBridge::OdometryHandler::updateCommand(
 
     std::lock_guard<std::mutex> lock(data_mutex_);
 
-    // 速度限制
-    velocity_.linear_x = std::clamp(cmd->linear.x, -MAX_LINEAR_VEL, MAX_LINEAR_VEL);
-    velocity_.linear_y = std::clamp(cmd->linear.y, -MAX_LINEAR_VEL, MAX_LINEAR_VEL);
-    velocity_.angular_z = std::clamp(cmd->angular.z, -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL);
+    // 使用clamp限制速度范围
+    velocity_.linear_x = std::clamp(cmd->linear.x,
+                                   -config_.max_linear_vel,
+                                   config_.max_linear_vel);
+    velocity_.linear_y = std::clamp(cmd->linear.y,
+                                   -config_.max_linear_vel,
+                                   config_.max_linear_vel);
+    velocity_.angular_z = std::clamp(cmd->angular.z,
+                                    -config_.max_angular_vel,
+                                    config_.max_angular_vel);
 }
 
 AmrRosBridge::ModbusHandler::Command
@@ -241,8 +250,10 @@ void AmrRosBridge::OdometryHandler::publish(const ros::Time& time) {
 
 // ImuHandler实现
 AmrRosBridge::ImuHandler::ImuHandler(
-    ros::NodeHandle& nh, const std::string& imu_frame)
-    : frame_id_(imu_frame) {
+    ros::NodeHandle& nh,
+    const std::string& imu_frame,
+    const BridgeConfig& config)
+    : frame_id_(imu_frame), config_(config) {
 
     imu_pub_ = nh.advertise<sensor_msgs::Imu>("imu", 50);
 }
@@ -297,12 +308,12 @@ void AmrRosBridge::ImuHandler::publish(const ros::Time& time) {
     imu_msg.header.stamp = time;
     imu_msg.header.frame_id = frame_id_;
 
-    // 设置加速度
+    // 设置加速度数据
     imu_msg.linear_acceleration.x = imu_data_.acc_x;
     imu_msg.linear_acceleration.y = imu_data_.acc_y;
     imu_msg.linear_acceleration.z = imu_data_.acc_z;
 
-    // 设置角速度
+    // 设置角速度数据
     imu_msg.angular_velocity.x = imu_data_.gyro_x;
     imu_msg.angular_velocity.y = imu_data_.gyro_y;
     imu_msg.angular_velocity.z = imu_data_.gyro_z;
@@ -333,8 +344,9 @@ AmrRosBridge::AmrRosBridge(ros::NodeHandle& nh) : nh_(nh) {
     // 创建各个处理器
     modbus_ = std::make_unique<ModbusHandler>(nh_);
     odom_ = std::make_unique<OdometryHandler>(
-        nh_, odom_frame_id_, base_frame_id_);
-    imu_ = std::make_unique<ImuHandler>(nh_, imu_frame_id_);
+        nh_, odom_frame_id_, base_frame_id_, config_);
+    imu_ = std::make_unique<ImuHandler>(
+        nh_, imu_frame_id_, config_);
 
     // 创建速度指令订阅器
     cmd_vel_sub_ = nh_.subscribe("cmd_vel", 1,
@@ -348,7 +360,7 @@ AmrRosBridge::~AmrRosBridge() {
 }
 
 bool AmrRosBridge::loadParameters() {
-    // 加载主循环频率
+    // 加载更新频率
     nh_.param<double>("update_rate", config_.update_rate, 50.0);
     if (config_.update_rate <= 0 || config_.update_rate > 200) {
         ROS_WARN("无效的更新频率(%.1f), 使用默认值: %.1f Hz",
@@ -376,16 +388,16 @@ bool AmrRosBridge::loadParameters() {
     nh_.param<std::string>("odom_frame", odom_frame_id_, "odom");
     nh_.param<std::string>("imu_frame", imu_frame_id_, "imu_link");
 
-    // 设置更新周期
-    odom_rate_.expected_period = 1.0 / config_.odom_rate;
-    imu_rate_.expected_period = 1.0 / config_.imu_rate;
-
     ROS_INFO("参数加载完成:");
     ROS_INFO("- 主循环频率: %.1f Hz", config_.update_rate);
     ROS_INFO("- 里程计频率: %.1f Hz", config_.odom_rate);
     ROS_INFO("- IMU频率: %.1f Hz", config_.imu_rate);
     ROS_INFO("- 最大线速度: %.2f m/s", config_.max_linear_vel);
     ROS_INFO("- 最大角速度: %.2f rad/s", config_.max_angular_vel);
+    ROS_INFO("- 坐标系配置:");
+    ROS_INFO("  - 基座: %s", base_frame_id_.c_str());
+    ROS_INFO("  - 里程计: %s", odom_frame_id_.c_str());
+    ROS_INFO("  - IMU: %s", imu_frame_id_.c_str());
 
     return true;
 }
@@ -439,30 +451,38 @@ void AmrRosBridge::run() {
     }
 
     ros::Rate rate(config_.update_rate);
+    double odom_period = 1.0 / config_.odom_rate;
+    double imu_period = 1.0 / config_.imu_rate;
+
+    ros::Time last_odom_time = ros::Time::now();
+    ros::Time last_imu_time = ros::Time::now();
+
     ROS_INFO("AMR ROS Bridge开始运行, 频率: %.1f Hz", config_.update_rate);
 
     while (ros::ok() && running_) {
         ros::Time current = ros::Time::now();
 
-        // 里程计数据更新(使用频率控制)
-        if (odom_rate_.need_update()) {
+        // 读取里程计数据
+        if ((current - last_odom_time).toSec() >= odom_period) {
             auto cmd = odom_->getReadCommand();
             if (modbus_->sendCommand(cmd)) {
-                std::vector<int32_t> odom_data(3);
-                // ... 处理数据 ...
+                // TODO: 从响应中获取数据
+                std::vector<int32_t> odom_data(3, 0);
                 odom_->updateOdometry(odom_data);
                 odom_->publish(current);
+                last_odom_time = current;
             }
         }
 
-        // IMU数据更新(使用频率控制)
-        if (imu_rate_.need_update()) {
+        // 读取IMU数据
+        if ((current - last_imu_time).toSec() >= imu_period) {
             auto cmd = imu_->getReadCommand();
             if (modbus_->sendCommand(cmd)) {
-                std::vector<int32_t> imu_data(6);
-                // ... 处理数据 ...
+                // TODO: 从响应中获取数据
+                std::vector<int32_t> imu_data(6, 0);
                 imu_->updateImu(imu_data);
                 imu_->publish(current);
+                last_imu_time = current;
             }
         }
 
@@ -484,6 +504,7 @@ void AmrRosBridge::shutdown() {
     stop_cmd.addr = 4960;
     stop_cmd.data_num = 4;
     std::fill(stop_cmd.data, stop_cmd.data + 4, 0);
+    stop_cmd.type = ModbusHandler::CmdType::WRITE;
 
     if (!modbus_->sendCommand(stop_cmd)) {
         ROS_WARN("停止命令发送失败");
