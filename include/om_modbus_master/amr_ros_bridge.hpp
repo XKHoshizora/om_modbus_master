@@ -48,6 +48,10 @@ public:
     void run();   // 主循环
     void shutdown();  // 关闭清理
 
+    // 先声明里程计和IMU处理类，再声明Modbus处理类
+    class OdometryHandler;
+    class ImuHandler;
+
     // Modbus通信处理类
     class ModbusHandler {
     public:
