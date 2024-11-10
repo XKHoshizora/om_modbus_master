@@ -54,8 +54,10 @@ struct VelocityCommand {
     bool updated = false;
 } latest_cmd;
 
+// 互斥锁和同步变量
 std::mutex state_mutex;
 std::mutex cmd_mutex;
+std::mutex query_mutex;
 std::atomic<bool> is_running{true};
 
 // 常量定义
@@ -69,14 +71,18 @@ const uint16_t REG_MAP_START = 4864;
 const uint16_t REG_ODOM_START = 4928;
 const uint16_t REG_VEL_START = 4960;
 
+// 预配置的消息
+om_modbus_master::om_query state_query_msg;
+om_modbus_master::om_query vel_msg;
+
 // 处理从Modbus设备接收到的响应
 void responseCallback(const om_modbus_master::om_response::ConstPtr& msg) {
     if (!msg || msg->data.size() < 9) return;
 
     std::lock_guard<std::mutex> lock(state_mutex);
-    robot_state.odom_x = msg->data[0] / 1000.0;
+    robot_state.odom_x = msg->data[0] / 1000.0;      // mm -> m
     robot_state.odom_y = msg->data[1] / 1000.0;
-    robot_state.odom_yaw = msg->data[2] / 1000000.0;
+    robot_state.odom_yaw = msg->data[2] / 1000000.0; // μrad -> rad
     robot_state.acc_x = msg->data[3] * ACC_SCALE;
     robot_state.acc_y = msg->data[4] * ACC_SCALE;
     robot_state.acc_z = msg->data[5] * ACC_SCALE;
@@ -147,21 +153,21 @@ void publishImu(const ros::Time& time) {
 
 // 速度控制线程
 void velocityControlThread() {
-    ros::Rate rate(50);  // 速度控制使用更高的频率
-    om_modbus_master::om_query vel_msg;
+    ros::Rate rate(20);  // 速度控制使用20Hz
+
+    // 预先配置速度控制消息
+    vel_msg.slave_id = 0x01;
+    vel_msg.func_code = 1;
+    vel_msg.write_addr = REG_VEL_START;
+    vel_msg.write_num = 4;
+
+    for(int i = 0; i < 64; i++) {
+        vel_msg.data[i] = 0;
+    }
+    vel_msg.data[0] = 1;  // 使能
 
     while(ros::ok() && is_running) {
-        vel_msg.slave_id = 0x01;
-        vel_msg.func_code = 1;
-        vel_msg.write_addr = REG_VEL_START;
-        vel_msg.write_num = 4;
-
-        for(int i = 0; i < 64; i++) {
-            vel_msg.data[i] = 0;
-        }
-
-        // 更新速度指令
-        vel_msg.data[0] = 1;  // 使能
+        bool should_publish = false;
 
         {
             std::lock_guard<std::mutex> lock(cmd_mutex);
@@ -170,32 +176,41 @@ void velocityControlThread() {
                 vel_msg.data[2] = static_cast<int32_t>(latest_cmd.angular_z * 1000000);
                 vel_msg.data[3] = static_cast<int32_t>(latest_cmd.linear_y * 1000);
                 latest_cmd.updated = false;
+                should_publish = true;
             }
         }
 
-        query_pub.publish(vel_msg);
+        if (should_publish) {
+            std::lock_guard<std::mutex> lock(query_mutex);
+            query_pub.publish(vel_msg);
+        }
+
         rate.sleep();
     }
 }
 
 // 状态查询线程（主线程）
 void stateQueryThread() {
-    ros::Rate rate(20);  // 状态查询保持20Hz
-    om_modbus_master::om_query query_msg;
+    ros::Rate rate(20);  // 状态查询使用20Hz
+
+    // 预先配置状态查询消息
+    state_query_msg.slave_id = 0x01;
+    state_query_msg.func_code = 2;
+    state_query_msg.read_addr = REG_ODOM_START;
+    state_query_msg.read_num = 9;
+    state_query_msg.write_addr = REG_VEL_START;
+    state_query_msg.write_num = 4;
+
+    for(int i = 0; i < 64; i++) {
+        state_query_msg.data[i] = 0;
+    }
+    state_query_msg.data[0] = 1;  // 使能
 
     while(ros::ok() && is_running) {
-        query_msg.slave_id = 0x01;
-        query_msg.func_code = 2;
-        query_msg.read_addr = REG_ODOM_START;
-        query_msg.read_num = 9;
-        query_msg.write_addr = 0;  // 不包含写操作
-        query_msg.write_num = 0;
-
-        for(int i = 0; i < 64; i++) {
-            query_msg.data[i] = 0;
+        {
+            std::lock_guard<std::mutex> lock(query_mutex);
+            query_pub.publish(state_query_msg);
         }
-
-        query_pub.publish(query_msg);
 
         ros::Time current_time = ros::Time::now();
         publishOdomAndTf(current_time);
@@ -210,6 +225,7 @@ int main(int argc, char** argv) {
     ros::init(argc, argv, "amr_ros_bridge");
     ros::NodeHandle nh;
 
+    // 创建TF广播器
     tf2_ros::TransformBroadcaster tf_broadcaster;
     tf_broadcaster_ptr = &tf_broadcaster;
 
@@ -221,7 +237,7 @@ int main(int argc, char** argv) {
     ros::Subscriber cmd_vel_sub = nh.subscribe("cmd_vel", 1, cmdVelCallback);
 
     ROS_INFO("Initializing AMR ROS Bridge...");
-    ros::Duration(0.3).sleep();
+    ros::Duration(1.0).sleep();
 
     // 设置寄存器映射
     om_modbus_master::om_query init_msg;
@@ -248,9 +264,12 @@ int main(int argc, char** argv) {
     init_msg.data[18] = 995;  // ω
     init_msg.data[19] = 996;  // Vy
 
-    query_pub.publish(init_msg);
-    ros::Duration(0.3).sleep();
+    {
+        std::lock_guard<std::mutex> lock(query_mutex);
+        query_pub.publish(init_msg);
+    }
 
+    ros::Duration(1.0).sleep();
     ROS_INFO("AMR ROS Bridge initialized successfully");
 
     // 启动速度控制线程
