@@ -46,7 +46,7 @@ public:
     void run();   // 主循环
     void shutdown();  // 关闭清理
 
-protected:
+public:
     // Modbus通信相关
     class ModbusHandler {
     public:
@@ -59,22 +59,23 @@ protected:
 
         // 命令数据结构
         struct Command {
-            uint8_t slave_id;     // 从站ID
-            uint8_t func_code;    // 功能码
-            uint32_t addr;        // 地址
-            uint8_t data_num;     // 数据数量
-            int32_t data[64];     // 数据
+            uint8_t slave_id{0x01};     // 从站ID
+            uint8_t func_code{0};    // 功能码
+            uint32_t addr{0};        // 地址
+            uint8_t data_num{0}     // 数据数量
+            int32_t data[64]{};     // 数据
             ros::Time timestamp;  // 时间戳
-            CmdType type;         // 命令类型
+            CmdType type{CmdType::READ};         // 命令类型
         };
 
         explicit ModbusHandler(ros::NodeHandle& nh);
         bool init();
         bool sendCommand(const Command& cmd);
+
+    private:
         void handleResponse(const om_modbus_master::om_response::ConstPtr& msg);
         void handleState(const om_modbus_master::om_state::ConstPtr& msg);
 
-    private:
         ros::Publisher query_pub_;      // 查询发布器
         ros::Subscriber response_sub_;  // 响应订阅器
         ros::Subscriber state_sub_;     // 状态订阅器
@@ -91,9 +92,6 @@ protected:
     // 里程计处理
     class OdometryHandler {
     public:
-        using Command = ModbusHandler::Command;
-        using CmdType = ModbusHandler::CmdType;
-
         OdometryHandler(ros::NodeHandle& nh,
                        const std::string& odom_frame,
                        const std::string& base_frame,
@@ -101,8 +99,8 @@ protected:
 
         void updateOdometry(const std::vector<int32_t>& data);
         void updateCommand(const geometry_msgs::Twist::ConstPtr& cmd);
-        Command getReadCommand();
-        Command getWriteCommand();
+        ModbusHandler::Command getReadCommand();
+        ModbusHandler::Command getWriteCommand();
         void publish(const ros::Time& time);
 
     private:
@@ -113,7 +111,7 @@ protected:
         const std::string base_frame_id_; // 基座坐标系
         const BridgeConfig& config_;      // 配置参数引用
 
-        std::mutex data_mutex_;     // 数据互斥锁
+        mutable std::mutex data_mutex_;     // 数据互斥锁
 
         // 位置状态
         struct {
@@ -137,15 +135,12 @@ protected:
     // IMU处理
     class ImuHandler {
     public:
-        using Command = ModbusHandler::Command;
-        using CmdType = ModbusHandler::CmdType;
-
         ImuHandler(ros::NodeHandle& nh,
                   const std::string& imu_frame,
                   const BridgeConfig& config);
 
         void updateImu(const std::vector<int32_t>& data);
-        Command getReadCommand();
+        ModbusHandler::Command getReadCommand();
         void publish(const ros::Time& time);
 
     private:
@@ -171,6 +166,13 @@ protected:
         // Modbus寄存器地址
         static constexpr uint32_t IMU_REG_ADDR = 4928;  // IMU数据起始地址
     };
+
+    explicit AmrRosBridge(ros::NodeHandle& nh);
+    ~AmrRosBridge();
+
+    bool init();
+    void run();
+    void shutdown();
 
 private:
     ros::NodeHandle& nh_;             // ROS节点句柄

@@ -165,8 +165,7 @@ void AmrRosBridge::OdometryHandler::updateCommand(
                                     config_.max_angular_vel);
 }
 
-AmrRosBridge::ModbusHandler::Command
-AmrRosBridge::OdometryHandler::getReadCommand() const {
+ModbusHandler::Command OdometryHandler::getReadCommand() {
     Command cmd;
     cmd.slave_id = 0x01;
     cmd.func_code = 0;  // 读取功能
@@ -176,8 +175,7 @@ AmrRosBridge::OdometryHandler::getReadCommand() const {
     return cmd;
 }
 
-AmrRosBridge::ModbusHandler::Command
-AmrRosBridge::OdometryHandler::getWriteCommand() const {
+ModbusHandler::Command OdometryHandler::getWriteCommand() {
     std::lock_guard<std::mutex> lock(data_mutex_);
 
     Command cmd;
@@ -290,8 +288,7 @@ void AmrRosBridge::ImuHandler::updateImu(
                        (1 - config_.imu_alpha) * imu_data_.gyro_z;
 }
 
-AmrRosBridge::ModbusHandler::Command
-AmrRosBridge::ImuHandler::getReadCommand() const {
+ModbusHandler::Command ImuHandler::getReadCommand() {
     Command cmd;
     cmd.slave_id = 0x01;
     cmd.func_code = 0;
