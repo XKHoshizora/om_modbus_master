@@ -43,7 +43,7 @@ void AmrRosBridge::ImuHandler::publish(const ros::Time& time) {
 
 // OdometryHandler::getWriteCommand方法实现
 AmrRosBridge::ModbusHandler::Command AmrRosBridge::OdometryHandler::getWriteCommand() {
-    Command cmd;
+    AmrRosBridge::ModbusHandler::Command cmd;
     cmd.slave_id = 0x01;
     cmd.func_code = 16; // 示例功能码
     cmd.addr = VEL_REG_ADDR;
