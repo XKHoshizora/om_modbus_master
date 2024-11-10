@@ -52,8 +52,8 @@ private:
         void setState(const om_modbus_master::om_state& state);
 
     private:
-        static constexpr double COMMAND_INTERVAL = 0.02;     // 20ms用于常规命令
-        static constexpr double MOTION_CMD_INTERVAL = 0.01;  // 10ms用于运动命令
+        static constexpr double COMMAND_INTERVAL = 0.01;     // 10ms用于常规命令
+        static constexpr double MOTION_CMD_INTERVAL = 0.005;  // 5ms用于运动命令
         ros::Time last_command_time_{ros::Time::now()};
 
         ros::Publisher query_pub_;
@@ -61,8 +61,8 @@ private:
         std::atomic<int> state_mes_{0};
         std::atomic<int> state_error_{0};
 
-        static constexpr double SPIN_SLEEP_TIME = 0.001;
-        static constexpr double COMM_TIMEOUT = 0.5;
+        static constexpr double SPIN_SLEEP_TIME = 0.0005;
+        static constexpr double COMM_TIMEOUT = 0.1;
         static constexpr int MAX_CONSECUTIVE_RETRIES = 3;
         ros::Time last_spin_time_;
     };
