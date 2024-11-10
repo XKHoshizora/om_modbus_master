@@ -1,5 +1,6 @@
 /**
  * @file    amr_ros_bridge.hpp
+ * @brief   AMR ROS桥接头文件，定义了AMR ROS Bridge节点的接口和实现
  */
 #ifndef AMR_ROS_BRIDGE_HPP
 #define AMR_ROS_BRIDGE_HPP
@@ -18,8 +19,7 @@
 #include "om_modbus_master/om_response.h"
 #include "om_modbus_master/om_state.h"
 
-// 前向声明
-class AmrRosBridge;
+#define DEBUG_MODBUS 1 // 调试标志
 
 // 配置参数结构体
 struct BridgeConfig {
@@ -37,66 +37,17 @@ struct BridgeConfig {
     double imu_alpha{0.8};       // IMU数据平滑系数
 };
 
+// 主类AmrRosBridge，负责管理Modbus通信和ROS数据接口
 class AmrRosBridge {
 public:
-    explicit AmrRosBridge(ros::NodeHandle& nh);
-    ~AmrRosBridge();
+    explicit AmrRosBridge(ros::NodeHandle& nh); // 构造函数
+    ~AmrRosBridge();  // 析构函数
 
     bool init();  // 初始化
     void run();   // 主循环
     void shutdown();  // 关闭清理
 
-    // Modbus通信相关
-    class ModbusHandler {
-    public:
-        // 命令类型枚举
-        enum class CmdType {
-            READ,    // 读取命令
-            WRITE,   // 写入命令
-            MONITOR  // 状态监控
-        };
-
-        // 命令数据结构
-        struct Command {
-            uint8_t slave_id{0x01};      // 从站ID
-            uint8_t func_code{0};        // 功能码
-            uint32_t addr{0};            // 地址(用于单独读写)
-            uint32_t read_addr{0};       // 读取地址
-            uint32_t write_addr{0};      // 写入地址
-            uint8_t data_num{0};         // 数据数量(用于单独读写)
-            uint8_t read_num{0};         // 读取数量
-            uint8_t write_num{0};        // 写入数量
-            int32_t data[64]{};          // 数据
-            ros::Time timestamp;         // 时间戳
-            CmdType type{CmdType::READ}; // 命令类型
-        };
-
-        explicit ModbusHandler(ros::NodeHandle& nh);
-        bool init();
-        bool sendCommand(const Command& cmd);
-
-    private:
-        void handleResponse(const om_modbus_master::om_response::ConstPtr& msg);
-        void handleState(const om_modbus_master::om_state::ConstPtr& msg);
-
-        ros::Publisher query_pub_;      // 查询发布器
-        ros::Subscriber response_sub_;  // 响应订阅器
-        ros::Subscriber state_sub_;     // 状态订阅器
-
-        volatile bool busy_{false};     // 通信忙状态
-        volatile int error_{0};         // 错误状态
-        std::queue<Command> cmd_queue_; // 命令队列
-        mutable std::mutex queue_mutex_;        // 队列互斥锁
-
-        static constexpr int MAX_RETRY = 3;  // 最大重试次数
-        static constexpr double TIMEOUT = 0.1; // 超时时间(s)
-
-        ros::Time last_busy_time_;  // 记录最后一次忙状态的开始时间
-        static constexpr double MIN_CMD_INTERVAL = 0.05;  // 最小命令间隔(20Hz)
-    };
-
-private:
-    // 里程计处理
+    // 里程计处理类
     class OdometryHandler {
     public:
         OdometryHandler(ros::NodeHandle& nh,
@@ -104,15 +55,15 @@ private:
                        const std::string& base_frame,
                        const BridgeConfig& config);
 
-        void updateOdometry(const std::vector<int32_t>& data);
-        void updateCommand(const geometry_msgs::Twist::ConstPtr& cmd);
-        ModbusHandler::Command getReadCommand();
-        ModbusHandler::Command getWriteCommand();
-        void publish(const ros::Time& time);
+        void updateOdometry(const std::vector<int32_t>& data); // 更新里程计数据
+        void updateCommand(const geometry_msgs::Twist::ConstPtr& cmd); // 更新速度指令
+        ModbusHandler::Command getReadCommand(); // 获取读取命令
+        ModbusHandler::Command getWriteCommand(); // 获取写入命令
+        void publish(const ros::Time& time); // 发布数据
 
     private:
-        ros::Publisher odom_pub_;  // 里程计发布器
-        tf2_ros::TransformBroadcaster tf_broadcaster_;  // TF广播器
+        ros::Publisher odom_pub_; // 里程计发布器
+        tf2_ros::TransformBroadcaster tf_broadcaster_; // TF广播器
 
         const std::string odom_frame_id_; // 里程计坐标系
         const std::string base_frame_id_; // 基座坐标系
@@ -139,16 +90,16 @@ private:
         static constexpr uint32_t VEL_REG_ADDR = 4960;   // 速度指令起始地址
     };
 
-    // IMU处理
+    // IMU处理类
     class ImuHandler {
     public:
         ImuHandler(ros::NodeHandle& nh,
                   const std::string& imu_frame,
                   const BridgeConfig& config);
 
-        void updateImu(const std::vector<int32_t>& data);
-        ModbusHandler::Command getReadCommand();
-        void publish(const ros::Time& time);
+        void updateImu(const std::vector<int32_t>& data); // 更新IMU数据
+        ModbusHandler::Command getReadCommand(); // 获取读取命令
+        void publish(const ros::Time& time); // 发布IMU数据
 
     private:
         ros::Publisher imu_pub_;    // IMU发布器
@@ -174,6 +125,59 @@ private:
         static constexpr uint32_t IMU_REG_ADDR = 4928;  // IMU数据起始地址
     };
 
+    // Modbus通信处理类
+    class ModbusHandler {
+    public:
+        enum class CmdType {
+            READ,    // 读取命令
+            WRITE,   // 写入命令
+            MONITOR  // 状态监控
+        };
+
+        struct Command {  // 命令结构体
+            uint8_t slave_id{0x01};      // 从站ID
+            uint8_t func_code{0};        // 功能码
+            uint32_t addr{0};            // 地址(用于单独读写)
+            uint32_t read_addr{0};       // 读取地址
+            uint32_t write_addr{0};      // 写入地址
+            uint8_t data_num{0};         // 数据数量(用于单独读写)
+            uint8_t read_num{0};         // 读取数量
+            uint8_t write_num{0};        // 写入数量
+            int32_t data[64]{};          // 数据
+            ros::Time timestamp;         // 时间戳
+            CmdType type{CmdType::READ}; // 命令类型
+        };
+
+        explicit ModbusHandler(ros::NodeHandle& nh,
+                          OdometryHandler* odom,
+                          ImuHandler* imu);
+
+        bool init(); // 初始化
+        bool sendCommand(const Command& cmd); // 发送命令
+
+    private:
+        OdometryHandler* odom_;  // 里程计处理器
+        ImuHandler* imu_;        // IMU处理器
+
+        void handleResponse(const om_modbus_master::om_response::ConstPtr& msg); // 处理Modbus响应
+        void handleState(const om_modbus_master::om_state::ConstPtr& msg);       // 处理Modbus状态
+
+        ros::Publisher query_pub_;      // 查询发布器
+        ros::Subscriber response_sub_;  // 响应订阅器
+        ros::Subscriber state_sub_;     // 状态订阅器
+
+        volatile bool busy_{false};     // 通信忙状态
+        volatile int error_{0};         // 错误状态
+        std::queue<Command> cmd_queue_; // 命令队列
+        mutable std::mutex queue_mutex_; // 队列互斥锁
+
+        static constexpr int MAX_RETRY = 3;  // 最大重试次数
+        static constexpr double TIMEOUT = 0.1; // 超时时间(s)
+
+        ros::Time last_busy_time_;  // 记录最后一次忙状态的开始时间
+        static constexpr double MIN_CMD_INTERVAL = 0.05;  // 最小命令间隔(20Hz)
+    };
+
 private:
     ros::NodeHandle& nh_;             // ROS节点句柄
     std::unique_ptr<ModbusHandler> modbus_;    // Modbus处理器
@@ -181,7 +185,6 @@ private:
     std::unique_ptr<ImuHandler> imu_;          // IMU处理器
 
     ros::Subscriber cmd_vel_sub_;     // 速度指令订阅器
-
     std::atomic<bool> running_{false}; // 运行状态
     BridgeConfig config_;             // 配置参数
 
@@ -190,11 +193,8 @@ private:
     std::string base_frame_id_{"base_footprint"};
     std::string imu_frame_id_{"imu_link"};
 
-    // 参数加载
-    bool loadParameters();
-
-    // 回调函数
-    void cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg);
+    bool loadParameters(); // 加载参数
+    void cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg); // 速度指令回调
 };
 
 #endif // AMR_ROS_BRIDGE_HPP

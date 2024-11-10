@@ -1,13 +1,16 @@
 /**
  * @file    amr_ros_bridge.cpp
- * @brief   AMR ROS桥接节点实现
+ * @brief   AMR ROS桥接节点实现，负责与机器人进行Modbus通信，并将数据发布到ROS话题
  */
 
 #include "om_modbus_master/amr_ros_bridge.hpp"
 
-// ModbusHandler实现
-AmrRosBridge::ModbusHandler::ModbusHandler(ros::NodeHandle& nh) {
-    // 初始化发布器和订阅器
+// ModbusHandler类实现 - 处理Modbus协议的通信，包括发送命令和处理响应
+AmrRosBridge::ModbusHandler::ModbusHandler(ros::NodeHandle& nh,
+                                           OdometryHandler* odom,
+                                           ImuHandler* imu)
+    : odom_(odom), imu_(imu) {
+    // 初始化Modbus通信的发布器和订阅器
     query_pub_ = nh.advertise<om_modbus_master::om_query>("om_query1", 10);
     response_sub_ = nh.subscribe("om_response1", 1,
                                 &ModbusHandler::handleResponse, this);
@@ -15,46 +18,48 @@ AmrRosBridge::ModbusHandler::ModbusHandler(ros::NodeHandle& nh) {
                              &ModbusHandler::handleState, this);
 }
 
+/**
+ * @brief 初始化Modbus通信，等待ROS话题准备完毕并验证通信状态
+ * @return true 如果初始化成功；false 如果初始化失败
+ */
 bool AmrRosBridge::ModbusHandler::init() {
-    int retry_count = 0;
-    const int MAX_INIT_RETRY = 5;
-    const double RETRY_DELAY = 1.0;  // 秒
+    int retry_count = 0;               // 当前重试次数
+    const int MAX_INIT_RETRY = 5;      // 最大初始化重试次数
+    const double RETRY_DELAY = 1.0;    // 初始化失败后重试等待的秒数
 
     ROS_INFO("Initializing Modbus communication...");
 
-    // 等待节点和话题准备就绪
-    ros::Duration(0.5).sleep();  // 给ROS节点一些启动时间
+    // 等待ROS节点和话题的准备就绪
+    ros::Duration(0.5).sleep();
 
-    // 检查发布器和订阅器是否正确创建
+    // 检查Modbus主节点是否已连接，如果未连接则等待
     if (!query_pub_ || query_pub_.getNumSubscribers() == 0) {
         ROS_WARN("Waiting for Modbus master node to connect...");
-        ros::Duration(1.0).sleep();  // 再给一些时间等待连接
+        ros::Duration(1.0).sleep();
     }
 
-    // 发送初始化查询
+    // 初始化Modbus通信的查询消息
     om_modbus_master::om_query init_msg;
-    init_msg.slave_id = 0x01;    // 目标从站ID
-    init_msg.func_code = 0;      // 读取功能
-    init_msg.read_addr = 4928;   // 状态寄存器地址
-    init_msg.read_num = 1;       // 读取一个寄存器
-    init_msg.write_num = 0;
+    init_msg.slave_id = 0x01;       // 从站ID
+    init_msg.func_code = 0;         // 读取功能码
+    init_msg.read_addr = 4928;      // 起始读取地址
+    init_msg.read_num = 1;          // 读取1个寄存器
+    init_msg.write_num = 0;         // 不涉及写入操作
 
+    // 循环尝试发送初始化指令并等待响应
     while (retry_count < MAX_INIT_RETRY && ros::ok()) {
         ROS_INFO("Attempting to initialize Modbus communication (%d/%d)...",
                  retry_count + 1, MAX_INIT_RETRY);
 
         busy_ = true;
         error_ = 0;
-
-        // 发送查询
         query_pub_.publish(init_msg);
 
-        // 等待响应
+        // 等待响应，直到超时或收到响应
         ros::Time start_time = ros::Time::now();
         bool got_response = false;
-
         while (ros::Time::now() - start_time < ros::Duration(TIMEOUT)) {
-            ros::spinOnce();  // 处理回调
+            ros::spinOnce();
             if (!busy_ && error_ == 0) {
                 got_response = true;
                 break;
@@ -62,6 +67,7 @@ bool AmrRosBridge::ModbusHandler::init() {
             ros::Duration(0.01).sleep();
         }
 
+        // 如果收到有效响应，则初始化成功
         if (got_response) {
             ROS_INFO("Modbus communication initialized successfully");
             return true;
@@ -75,15 +81,21 @@ bool AmrRosBridge::ModbusHandler::init() {
         }
     }
 
+    // 如果超过最大重试次数，报告初始化失败
     ROS_ERROR("Modbus communication initialization failed");
     return false;
 }
 
+/**
+ * @brief 发送Modbus命令并等待响应
+ * @param cmd 要发送的命令数据
+ * @return true 如果命令发送成功；false 如果发送失败
+ */
 bool AmrRosBridge::ModbusHandler::sendCommand(const Command& cmd) {
-    std::lock_guard<std::mutex> lock(queue_mutex_);  // 加锁保护
+    std::lock_guard<std::mutex> lock(queue_mutex_);  // 保护命令队列的互斥锁
 
+    // 检查通信是否在忙碌状态
     if (busy_) {
-        // 如果忙标志持续时间过长，强制重置
         ros::Time current = ros::Time::now();
         if ((current - last_busy_time_).toSec() > TIMEOUT) {
             ROS_DEBUG("Reset busy flag due to timeout");
@@ -94,57 +106,51 @@ bool AmrRosBridge::ModbusHandler::sendCommand(const Command& cmd) {
         }
     }
 
-    busy_ = true;
-    last_busy_time_ = ros::Time::now();  // 记录开始忙的时间
+    busy_ = true; // 标记通信为忙碌状态
+    last_busy_time_ = ros::Time::now();
     error_ = 0;
 
+    // 构建Modbus查询消息
     om_modbus_master::om_query msg;
     msg.slave_id = cmd.slave_id;
     msg.func_code = cmd.func_code;
-
-    switch (cmd.type) {
-        case CmdType::READ:
-            msg.read_addr = cmd.addr;
-            msg.read_num = cmd.data_num;
-            msg.write_num = 0;
-            break;
-
-        case CmdType::WRITE:
-            if (cmd.func_code == 2) {  // Read & Write
-                msg.read_addr = cmd.read_addr;
-                msg.read_num = cmd.read_num;
-                msg.write_addr = cmd.write_addr;
-                msg.write_num = cmd.write_num;
-                for (int i = 0; i < cmd.write_num; i++) {
-                    msg.data[i] = cmd.data[i];
-                }
-            } else {  // Write only
-                msg.write_addr = cmd.addr;
-                msg.write_num = cmd.data_num;
-                for (int i = 0; i < cmd.data_num; i++) {
-                    msg.data[i] = cmd.data[i];
-                }
+    if (cmd.type == CmdType::READ) {
+        msg.read_addr = cmd.addr;
+        msg.read_num = cmd.data_num;
+        msg.write_num = 0;
+    } else if (cmd.type == CmdType::WRITE) {
+        if (cmd.func_code == 2) {  // 读写功能
+            msg.read_addr = cmd.read_addr;
+            msg.read_num = cmd.read_num;
+            msg.write_addr = cmd.write_addr;
+            msg.write_num = cmd.write_num;
+            for (int i = 0; i < cmd.write_num; i++) {
+                msg.data[i] = cmd.data[i];
             }
-            break;
-
-        case CmdType::MONITOR:
-            msg.read_addr = cmd.addr;
-            msg.read_num = cmd.data_num;
-            msg.write_num = 0;
-            break;
+        } else {
+            msg.write_addr = cmd.addr;
+            msg.write_num = cmd.data_num;
+            for (int i = 0; i < cmd.data_num; i++) {
+                msg.data[i] = cmd.data[i];
+            }
+        }
+    } else if (cmd.type == CmdType::MONITOR) {
+        msg.read_addr = cmd.addr;
+        msg.read_num = cmd.data_num;
+        msg.write_num = 0;
     }
 
-    busy_ = true;
+    // 发布查询消息到Modbus主节点
     query_pub_.publish(msg);
 
-    // 等待响应
+    // 等待响应，若超时则返回失败
     ros::Time start = ros::Time::now();
     while (busy_ && (ros::Time::now() - start).toSec() < TIMEOUT) {
         ros::spinOnce();
         ros::Duration(0.001).sleep();
     }
 
-    if (busy_) {  // 超时
+    if (busy_) {
         busy_ = false;
         error_ = 3;
         return false;
@@ -153,9 +159,12 @@ bool AmrRosBridge::ModbusHandler::sendCommand(const Command& cmd) {
     return error_ == 0;
 }
 
+/**
+ * @brief 处理Modbus响应消息，根据响应数据更新里程计和IMU数据
+ * @param msg 从Modbus主节点接收到的响应消息
+ */
 void AmrRosBridge::ModbusHandler::handleResponse(
     const om_modbus_master::om_response::ConstPtr& msg) {
-
     if (!msg) {
         ROS_ERROR("Received empty Modbus response");
         error_ = 1;
@@ -163,33 +172,35 @@ void AmrRosBridge::ModbusHandler::handleResponse(
         return;
     }
 
-    ROS_DEBUG("Received Modbus response: slave_id=0x%02X, func_code=0x%02X",
-              msg->slave_id, msg->func_code);
-
-    // 检查响应的从站ID
-    if (msg->slave_id != 0x01) {
-        // 这可能是其他设备的响应，忽略它
-        return;
-    }
-
-    // 检查功能码（如果有错误，功能码会有最高位置1）
-    if (msg->func_code & 0x80) {
-        ROS_ERROR("Modbus device returned an error, function code: 0x%02X", msg->func_code);
-        error_ = 2;
+    // 检查数据长度是否满足要求
+    if (msg->func_code == 2 && msg->data_num < 9) {
+        ROS_WARN("Incomplete response data: got %d, expected 9", msg->data_num);
+        error_ = 4;
         busy_ = false;
         return;
     }
 
-    // 处理成功的响应
-    error_ = 0;
-    busy_ = false;
+    // 更新里程计和IMU数据
+    std::vector<int32_t> odom_data(msg->data, msg->data + 3);
+    odom_->updateOdometry(odom_data);
+
+    std::vector<int32_t> imu_data(msg->data + 3, msg->data + 9);
+    imu_->updateImu(imu_data);
+
+    error_ = 0;     // 重置错误状态
+    busy_ = false;  // 标记通信完成
 }
 
+/**
+ * @brief 处理Modbus状态消息，监控通信状态
+ * @param msg Modbus主节点发送的状态消息
+ */
 void AmrRosBridge::ModbusHandler::handleState(
     const om_modbus_master::om_state::ConstPtr& msg) {
 
     if (!msg) return;
 
+    // 检查状态错误
     if (msg->state_error != 0) {
         ROS_WARN("Modbus communication state error: %d", msg->state_error);
     }
@@ -197,7 +208,7 @@ void AmrRosBridge::ModbusHandler::handleState(
     error_ = msg->state_error;
 }
 
-// OdometryHandler实现
+// OdometryHandler类实现 - 处理里程计数据
 AmrRosBridge::OdometryHandler::OdometryHandler(
     ros::NodeHandle& nh,
     const std::string& odom_frame,
@@ -207,44 +218,53 @@ AmrRosBridge::OdometryHandler::OdometryHandler(
       base_frame_id_(base_frame),
       config_(config) {
 
+    // 初始化里程计话题的发布器
     odom_pub_ = nh.advertise<nav_msgs::Odometry>("odom", 50);
 }
 
+/**
+ * @brief 更新里程计数据
+ * @param data 从Modbus响应中解析的里程计数据
+ */
 void AmrRosBridge::OdometryHandler::updateOdometry(
     const std::vector<int32_t>& data) {
 
-    std::lock_guard<std::mutex> lock(data_mutex_);
+    std::lock_guard<std::mutex> lock(data_mutex_); // 锁定数据互斥锁以确保线程安全
 
-    // 检查数据有效性
+    // 检查数据是否完整
     if (data.size() < 3) {
         ROS_WARN_THROTTLE(1.0, "Incomplete odometry data");
         return;
     }
 
-    // 转换单位：mm -> m, μrad -> rad
+    // 解析里程计数据，将单位转换为米和弧度
     double new_x = data[0] / 1000.0;
     double new_y = data[1] / 1000.0;
     double new_yaw = data[2] / 1000000.0;
 
-    // 检查数据变化是否超过最小阈值
+    // 检查位移和旋转是否显著，过滤掉微小的变化
     if (std::abs(new_x - pose_.x) < config_.min_valid_distance &&
         std::abs(new_y - pose_.y) < config_.min_valid_distance &&
         std::abs(new_yaw - pose_.yaw) < config_.min_valid_rotation) {
-        return;  // 变化太小，忽略
+        return;
     }
 
-    // 应用平滑滤波
+    // 平滑更新里程计位置和偏航角，减小瞬时波动
     pose_.x = config_.odom_alpha * new_x + (1 - config_.odom_alpha) * pose_.x;
     pose_.y = config_.odom_alpha * new_y + (1 - config_.odom_alpha) * pose_.y;
     pose_.yaw = config_.odom_alpha * new_yaw + (1 - config_.odom_alpha) * pose_.yaw;
 }
 
+/**
+ * @brief 根据ROS发布的速度指令更新速度
+ * @param cmd 速度指令消息
+ */
 void AmrRosBridge::OdometryHandler::updateCommand(
     const geometry_msgs::Twist::ConstPtr& cmd) {
 
-    std::lock_guard<std::mutex> lock(data_mutex_);
+    std::lock_guard<std::mutex> lock(data_mutex_); // 锁定数据互斥锁
 
-    // 使用clamp限制速度范围
+    // 限制线速度和角速度在配置的最大值范围内
     velocity_.linear_x = std::clamp(cmd->linear.x,
                                    -config_.max_linear_vel,
                                    config_.max_linear_vel);
@@ -256,43 +276,14 @@ void AmrRosBridge::OdometryHandler::updateCommand(
                                     config_.max_angular_vel);
 }
 
-AmrRosBridge::ModbusHandler::Command
-AmrRosBridge::OdometryHandler::getReadCommand() {
-    ModbusHandler::Command cmd;
-    cmd.slave_id = 0x01;
-    cmd.func_code = 0;  // 读取功能
-    cmd.addr = ODOM_REG_ADDR;
-    cmd.data_num = 3;   // x, y, yaw
-    cmd.type = ModbusHandler::CmdType::READ;
-    return cmd;
-}
-
-AmrRosBridge::ModbusHandler::Command
-AmrRosBridge::OdometryHandler::getWriteCommand() {
-    std::lock_guard<std::mutex> lock(data_mutex_);
-
-    ModbusHandler::Command cmd;
-    cmd.slave_id = 0x01;
-    cmd.func_code = 2;       // Read & Write功能
-    cmd.read_addr = 4928;    // 0x1340 读取地址
-    cmd.read_num = 9;        // 读取9个数据(odom + imu)
-    cmd.write_addr = 4960;   // 0x1360 写入地址
-    cmd.write_num = 4;       // 写入4个数据
-
-    // 数据打包
-    cmd.data[0] = 1;    // 运转模式
-    cmd.data[1] = static_cast<int32_t>(velocity_.linear_x * 1000.0);   // Vx [mm/s]
-    cmd.data[2] = static_cast<int32_t>(velocity_.angular_z * 1000000.0); // ω [μrad/s]
-    cmd.data[3] = static_cast<int32_t>(velocity_.linear_y * 1000.0);   // Vy [mm/s]
-
-    cmd.type = ModbusHandler::CmdType::WRITE;
-    return cmd;
-}
-
+/**
+ * @brief 发布TF变换和里程计数据
+ * @param time 当前时间戳
+ */
 void AmrRosBridge::OdometryHandler::publish(const ros::Time& time) {
-    std::lock_guard<std::mutex> lock(data_mutex_);
+    std::lock_guard<std::mutex> lock(data_mutex_);  // 确保数据的线程安全
 
-    // 发布TF转换
+    // 发布TF变换，描述里程计坐标和机器人底座坐标的关系
     geometry_msgs::TransformStamped tf_msg;
     tf_msg.header.stamp = time;
     tf_msg.header.frame_id = odom_frame_id_;
@@ -311,7 +302,7 @@ void AmrRosBridge::OdometryHandler::publish(const ros::Time& time) {
 
     tf_broadcaster_.sendTransform(tf_msg);
 
-    // 发布里程计消息
+    // 创建并发布里程计消息
     nav_msgs::Odometry odom_msg;
     odom_msg.header.stamp = time;
     odom_msg.header.frame_id = odom_frame_id_;
@@ -326,122 +317,41 @@ void AmrRosBridge::OdometryHandler::publish(const ros::Time& time) {
     odom_msg.twist.twist.linear.y = velocity_.linear_y;
     odom_msg.twist.twist.angular.z = velocity_.angular_z;
 
-    // 设置协方差
+    // 设置里程计和速度的协方差矩阵
     for(int i = 0; i < 36; i++) {
         odom_msg.pose.covariance[i] = 0.0;
         odom_msg.twist.covariance[i] = 0.0;
     }
-    odom_msg.pose.covariance[0] = 0.01;   // x
-    odom_msg.pose.covariance[7] = 0.01;   // y
-    odom_msg.pose.covariance[35] = 0.01;  // yaw
-    odom_msg.twist.covariance[0] = 0.01;  // vx
-    odom_msg.twist.covariance[7] = 0.01;  // vy
-    odom_msg.twist.covariance[35] = 0.01; // vyaw
+    odom_msg.pose.covariance[0] = 0.01;
+    odom_msg.pose.covariance[7] = 0.01;
+    odom_msg.pose.covariance[35] = 0.01;
+    odom_msg.twist.covariance[0] = 0.01;
+    odom_msg.twist.covariance[7] = 0.01;
+    odom_msg.twist.covariance[35] = 0.01;
 
     odom_pub_.publish(odom_msg);
 }
 
-// ImuHandler实现
-AmrRosBridge::ImuHandler::ImuHandler(
-    ros::NodeHandle& nh,
-    const std::string& imu_frame,
-    const BridgeConfig& config)
-    : frame_id_(imu_frame), config_(config) {
-
-    imu_pub_ = nh.advertise<sensor_msgs::Imu>("imu", 50);
-}
-
-void AmrRosBridge::ImuHandler::updateImu(
-    const std::vector<int32_t>& data) {
-
-    std::lock_guard<std::mutex> lock(data_mutex_);
-
-    if (data.size() < 6) {
-        ROS_WARN_THROTTLE(1.0, "Incomplete IMU data");
-        return;
-    }
-
-    // 转换并应用平滑滤波
-    double new_acc_x = data[0] * ACC_SCALE;
-    double new_acc_y = data[1] * ACC_SCALE;
-    double new_acc_z = data[2] * ACC_SCALE;
-    double new_gyro_x = data[3] * GYRO_SCALE;
-    double new_gyro_y = data[4] * GYRO_SCALE;
-    double new_gyro_z = data[5] * GYRO_SCALE;
-
-    imu_data_.acc_x = config_.imu_alpha * new_acc_x +
-                      (1 - config_.imu_alpha) * imu_data_.acc_x;
-    imu_data_.acc_y = config_.imu_alpha * new_acc_y +
-                      (1 - config_.imu_alpha) * imu_data_.acc_y;
-    imu_data_.acc_z = config_.imu_alpha * new_acc_z +
-                      (1 - config_.imu_alpha) * imu_data_.acc_z;
-    imu_data_.gyro_x = config_.imu_alpha * new_gyro_x +
-                       (1 - config_.imu_alpha) * imu_data_.gyro_x;
-    imu_data_.gyro_y = config_.imu_alpha * new_gyro_y +
-                       (1 - config_.imu_alpha) * imu_data_.gyro_y;
-    imu_data_.gyro_z = config_.imu_alpha * new_gyro_z +
-                       (1 - config_.imu_alpha) * imu_data_.gyro_z;
-}
-
-AmrRosBridge::ModbusHandler::Command
-AmrRosBridge::ImuHandler::getReadCommand() {
-    ModbusHandler::Command cmd;
-    cmd.slave_id = 0x01;
-    cmd.func_code = 0;
-    cmd.addr = IMU_REG_ADDR;
-    cmd.data_num = 6;  // ax, ay, az, gx, gy, gz
-    cmd.type = ModbusHandler::CmdType::READ;
-    return cmd;
-}
-
-void AmrRosBridge::ImuHandler::publish(const ros::Time& time) {
-    std::lock_guard<std::mutex> lock(data_mutex_);
-
-    sensor_msgs::Imu imu_msg;
-    imu_msg.header.stamp = time;
-    imu_msg.header.frame_id = frame_id_;
-
-    // 设置加速度数据
-    imu_msg.linear_acceleration.x = imu_data_.acc_x;
-    imu_msg.linear_acceleration.y = imu_data_.acc_y;
-    imu_msg.linear_acceleration.z = imu_data_.acc_z;
-
-    // 设置角速度数据
-    imu_msg.angular_velocity.x = imu_data_.gyro_x;
-    imu_msg.angular_velocity.y = imu_data_.gyro_y;
-    imu_msg.angular_velocity.z = imu_data_.gyro_z;
-
-    // 姿态未知，使用单位四元数
-    imu_msg.orientation.w = 1.0;
-    imu_msg.orientation.x = 0.0;
-    imu_msg.orientation.y = 0.0;
-    imu_msg.orientation.z = 0.0;
-
-    // 设置协方差
-    for(int i = 0; i < 9; i++) {
-        imu_msg.orientation_covariance[i] = -1;  // 姿态未知
-        imu_msg.angular_velocity_covariance[i] = (i % 4 == 0) ? 0.01 : 0.0;
-        imu_msg.linear_acceleration_covariance[i] = (i % 4 == 0) ? 0.01 : 0.0;
-    }
-
-    imu_pub_.publish(imu_msg);
-}
-
-// AmrRosBridge主类实现
+/**
+ * @brief AmrRosBridge主类构造函数，加载参数并初始化Modbus、里程计和IMU处理器
+ * @param nh ROS节点句柄
+ */
 AmrRosBridge::AmrRosBridge(ros::NodeHandle& nh) : nh_(nh) {
-    // 加载参数
+    // 加载ROS参数配置
     if (!loadParameters()) {
         throw std::runtime_error("Failed to load parameters");
     }
 
-    // 创建各个处理器
-    modbus_ = std::make_unique<ModbusHandler>(nh_);
+    // 创建处理器对象
     odom_ = std::make_unique<OdometryHandler>(
         nh_, odom_frame_id_, base_frame_id_, config_);
     imu_ = std::make_unique<ImuHandler>(
         nh_, imu_frame_id_, config_);
 
-    // 创建速度指令订阅器
+    modbus_ = std::make_unique<ModbusHandler>(
+        nh_, odom_.get(), imu_.get());
+
+    // 初始化速度指令订阅器
     cmd_vel_sub_ = nh_.subscribe("cmd_vel", 1,
                                 &AmrRosBridge::cmdVelCallback, this);
 
@@ -453,7 +363,7 @@ AmrRosBridge::~AmrRosBridge() {
 }
 
 bool AmrRosBridge::loadParameters() {
-    // 加载更新频率
+    // 从ROS参数服务器加载参数
     nh_.param<double>("update_rate", config_.update_rate, 50.0);
     if (config_.update_rate <= 0 || config_.update_rate > 200) {
         ROS_WARN("Invalid update rate (%.1f), using default: %.1f Hz",
@@ -461,22 +371,18 @@ bool AmrRosBridge::loadParameters() {
         config_.update_rate = 50.0;
     }
 
-    // 加载数据更新频率
     nh_.param<double>("odom_rate", config_.odom_rate, 20.0);
     nh_.param<double>("imu_rate", config_.imu_rate, 100.0);
     nh_.param<double>("cmd_timeout", config_.cmd_timeout, 0.1);
 
-    // 加载运动参数
     nh_.param<double>("max_linear_vel", config_.max_linear_vel, 2.0);
     nh_.param<double>("max_angular_vel", config_.max_angular_vel, 3.14);
     nh_.param<double>("min_valid_distance", config_.min_valid_distance, 0.001);
     nh_.param<double>("min_valid_rotation", config_.min_valid_rotation, 0.001);
 
-    // 加载滤波参数
     nh_.param<double>("odom_alpha", config_.odom_alpha, 0.8);
     nh_.param<double>("imu_alpha", config_.imu_alpha, 0.8);
 
-    // 加载坐标系参数
     nh_.param<std::string>("base_frame", base_frame_id_, "base_footprint");
     nh_.param<std::string>("odom_frame", odom_frame_id_, "odom");
     nh_.param<std::string>("imu_frame", imu_frame_id_, "imu_link");
@@ -495,45 +401,41 @@ bool AmrRosBridge::loadParameters() {
     return true;
 }
 
+// 初始化函数，配置Modbus通信等
 bool AmrRosBridge::init() {
     ROS_INFO("Initializing AMR ROS Bridge...");
 
-    // 1. 首先加载并验证参数
     if (!loadParameters()) {
         ROS_ERROR("Failed to load parameters");
         return false;
     }
 
-    // 2. 等待ROS系统就绪
     ros::Duration(0.5).sleep();
 
-    // 3. 初始化Modbus通信
     if (!modbus_ || !modbus_->init()) {
         ROS_ERROR("Modbus communication initialization failed");
         return false;
     }
 
-    // 3.1 配置间接引用地址映射
     ModbusHandler::Command addr_map_cmd;
     addr_map_cmd.slave_id = 0x01;
-    addr_map_cmd.func_code = 1;  // Write
-    addr_map_cmd.addr = 4864;    // 0x1300 间接参照地址设定
+    addr_map_cmd.func_code = 1;
+    addr_map_cmd.addr = 4864;
     addr_map_cmd.data_num = 32;
 
-    // 配置监控数据地址映射
-    addr_map_cmd.data[0] = 1069;  // 里程计X
-    addr_map_cmd.data[1] = 1070;  // 里程计Y
-    addr_map_cmd.data[2] = 1071;  // 里程计θ
-    addr_map_cmd.data[3] = 1038;  // 加速度X(IMU)
-    addr_map_cmd.data[4] = 1039;  // 加速度Y(IMU)
-    addr_map_cmd.data[5] = 1040;  // 加速度Z(IMU)
-    addr_map_cmd.data[6] = 1041;  // 角速度Roll(IMU)
-    addr_map_cmd.data[7] = 1042;  // 角速度Pitch(IMU)
-    addr_map_cmd.data[8] = 1043;  // 角速度Yaw(IMU)
-    addr_map_cmd.data[16] = 993;  // 运转模式
-    addr_map_cmd.data[17] = 994;  // Vx速度
-    addr_map_cmd.data[18] = 995;  // 角速度ω
-    addr_map_cmd.data[19] = 996;  // Vy速度
+    addr_map_cmd.data[0] = 1069;
+    addr_map_cmd.data[1] = 1070;
+    addr_map_cmd.data[2] = 1071;
+    addr_map_cmd.data[3] = 1038;
+    addr_map_cmd.data[4] = 1039;
+    addr_map_cmd.data[5] = 1040;
+    addr_map_cmd.data[6] = 1041;
+    addr_map_cmd.data[7] = 1042;
+    addr_map_cmd.data[8] = 1043;
+    addr_map_cmd.data[16] = 993;
+    addr_map_cmd.data[17] = 994;
+    addr_map_cmd.data[18] = 995;
+    addr_map_cmd.data[19] = 996;
 
     addr_map_cmd.type = ModbusHandler::CmdType::WRITE;
 
@@ -542,20 +444,19 @@ bool AmrRosBridge::init() {
         return false;
     }
 
-    ros::Duration(0.1).sleep();  // 等待配置生效
+    ros::Duration(0.1).sleep();
 
-    // 4. 验证通信
     ModbusHandler::Command test_cmd;
     test_cmd.slave_id = 0x01;
-    test_cmd.func_code = 2;      // 改为读写功能码
-    test_cmd.read_addr = 4928;   // 读取地址
-    test_cmd.read_num = 9;       // 读取全部数据
-    test_cmd.write_addr = 4960;  // 写入地址
-    test_cmd.write_num = 4;      // 写入4个数据
-    test_cmd.data[0] = 0;        // 停止模式
-    test_cmd.data[1] = 0;        // Vx = 0
-    test_cmd.data[2] = 0;        // ω = 0
-    test_cmd.data[3] = 0;        // Vy = 0
+    test_cmd.func_code = 2;
+    test_cmd.read_addr = 4928;
+    test_cmd.read_num = 9;
+    test_cmd.write_addr = 4960;
+    test_cmd.write_num = 4;
+    test_cmd.data[0] = 0;
+    test_cmd.data[1] = 0;
+    test_cmd.data[2] = 0;
+    test_cmd.data[3] = 0;
     test_cmd.type = ModbusHandler::CmdType::WRITE;
 
     int verify_retry = 0;
@@ -577,6 +478,7 @@ bool AmrRosBridge::init() {
     return false;
 }
 
+// cmd_vel回调函数，用于接收速度指令
 void AmrRosBridge::cmdVelCallback(
     const geometry_msgs::Twist::ConstPtr& msg) {
     if (!running_) return;
@@ -584,15 +486,12 @@ void AmrRosBridge::cmdVelCallback(
     static ros::Time last_cmd_time = ros::Time::now();
     ros::Time current = ros::Time::now();
 
-    // 限制命令发送频率
-    if ((current - last_cmd_time).toSec() < 0.05) {  // 最高20Hz
+    if ((current - last_cmd_time).toSec() < 0.05) {
         return;
     }
 
-    // 更新里程计命令
     odom_->updateCommand(msg);
 
-    // 发送速度命令
     auto cmd = odom_->getWriteCommand();
     int retry_count = 0;
     const int MAX_RETRY = 3;
@@ -600,16 +499,16 @@ void AmrRosBridge::cmdVelCallback(
     while (retry_count < MAX_RETRY) {
         if (modbus_->sendCommand(cmd)) {
             last_cmd_time = current;
-            return;  // 成功发送
+            return;
         }
         retry_count++;
-        ros::Duration(0.001).sleep();  // 短暂等待后重试
+        ros::Duration(0.001).sleep();
     }
 
-    // 只有多次重试都失败才输出警告
     ROS_WARN_THROTTLE(1.0, "Failed to send velocity command after %d retries", MAX_RETRY);
 }
 
+// 主循环
 void AmrRosBridge::run() {
     if (!running_) {
         ROS_WARN("AMR ROS Bridge not initialized");
@@ -624,10 +523,8 @@ void AmrRosBridge::run() {
     while (ros::ok() && running_) {
         ros::Time current = ros::Time::now();
 
-        // 发送速度命令并读取所有数据
-        auto cmd = odom_->getWriteCommand();  // 这个命令会读取所有数据并写入速度
+        auto cmd = odom_->getWriteCommand();
         if (modbus_->sendCommand(cmd)) {
-            // handleResponse中会更新数据
             odom_->publish(current);
             imu_->publish(current);
             last_update_time = current;
@@ -638,13 +535,13 @@ void AmrRosBridge::run() {
     }
 }
 
+// 关闭函数
 void AmrRosBridge::shutdown() {
     if (!running_) return;
 
     ROS_INFO("Shutting down AMR ROS Bridge...");
     running_ = false;
 
-    // 发送停止命令
     ModbusHandler::Command stop_cmd;
     stop_cmd.slave_id = 0x01;
     stop_cmd.func_code = 1;
@@ -657,11 +554,11 @@ void AmrRosBridge::shutdown() {
         ROS_WARN("Failed to send stop command");
     }
 
-    ros::Duration(0.1).sleep();  // 等待命令执行
+    ros::Duration(0.1).sleep();
     ROS_INFO("AMR ROS Bridge shutdown complete");
 }
 
-// 主函数
+// 主函数，初始化ROS节点并运行主循环
 int main(int argc, char** argv) {
     ros::init(argc, argv, "amr_ros_bridge");
     ros::NodeHandle nh;
