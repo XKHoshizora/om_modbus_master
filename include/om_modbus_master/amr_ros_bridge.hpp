@@ -101,8 +101,8 @@ protected:
 
         void updateOdometry(const std::vector<int32_t>& data);
         void updateCommand(const geometry_msgs::Twist::ConstPtr& cmd);
-        Command getReadCommand() const;
-        Command getWriteCommand() const;
+        Command getReadCommand();
+        Command getWriteCommand();
         void publish(const ros::Time& time);
 
     private:
@@ -145,7 +145,7 @@ protected:
                   const BridgeConfig& config);
 
         void updateImu(const std::vector<int32_t>& data);
-        Command getReadCommand() const;
+        Command getReadCommand();
         void publish(const ros::Time& time);
 
     private:
