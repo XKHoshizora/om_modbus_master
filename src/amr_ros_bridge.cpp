@@ -145,15 +145,8 @@ bool AmrRosBridge::ModbusHandler::init() {
  * @return true 如果命令发送成功；false 如果发送失败
  */
 bool AmrRosBridge::ModbusHandler::sendCommand(const Command& cmd) {
-    std::lock_guard<std::mutex> lock(queue_mutex_);  // 保护命令队列的互斥锁
+    std::lock_guard<std::mutex> lock(queue_mutex_);
 
-    // 检查功能码是否有效
-    if (cmd.func_code != 1 && cmd.func_code != 2) {
-        ROS_ERROR("Invalid function code: %d", cmd.func_code);
-        return false;
-    }
-
-    // 检查通信是否在忙碌状态
     if (busy_) {
         ros::Time current = ros::Time::now();
         if ((current - last_busy_time_).toSec() > TIMEOUT) {
@@ -165,44 +158,40 @@ bool AmrRosBridge::ModbusHandler::sendCommand(const Command& cmd) {
         }
     }
 
-    busy_ = true; // 标记通信为忙碌状态
+    // 详细的命令日志
+    ROS_DEBUG("Sending Modbus command - slave_id: %d, func_code: %d, read_addr: %d, write_addr: %d",
+              cmd.slave_id, cmd.func_code, cmd.read_addr, cmd.write_addr);
+
+    busy_ = true;
     last_busy_time_ = ros::Time::now();
     error_ = 0;
 
-    // 构建Modbus查询消息
     om_modbus_master::om_query msg;
     msg.slave_id = cmd.slave_id;
     msg.func_code = cmd.func_code;
-    if (cmd.type == CmdType::READ) {
-        msg.read_addr = cmd.addr;
-        msg.read_num = cmd.data_num;
-        msg.write_num = 0;
-    } else if (cmd.type == CmdType::WRITE) {
-        if (cmd.func_code == 2) {  // 读写功能
-            msg.read_addr = cmd.read_addr;
-            msg.read_num = cmd.read_num;
-            msg.write_addr = cmd.write_addr;
-            msg.write_num = cmd.write_num;
-            for (int i = 0; i < cmd.write_num; i++) {
-                msg.data[i] = cmd.data[i];
-            }
-        } else {
-            msg.write_addr = cmd.addr;
-            msg.write_num = cmd.data_num;
-            for (int i = 0; i < cmd.data_num; i++) {
-                msg.data[i] = cmd.data[i];
-            }
+
+    if (cmd.func_code == 2) {  // 读写功能码
+        msg.read_addr = cmd.read_addr;
+        msg.read_num = cmd.read_num;
+        msg.write_addr = cmd.write_addr;
+        msg.write_num = cmd.write_num;
+        for (int i = 0; i < cmd.write_num; i++) {
+            msg.data[i] = cmd.data[i];
+            ROS_DEBUG("Write data[%d]: %d", i, cmd.data[i]);
         }
-    } else if (cmd.type == CmdType::MONITOR) {
-        msg.read_addr = cmd.addr;
-        msg.read_num = cmd.data_num;
-        msg.write_num = 0;
+    } else if (cmd.func_code == 1) {  // 写入功能码
+        msg.write_addr = cmd.addr;
+        msg.write_num = cmd.data_num;
+        msg.read_num = 0;  // 不需要读取
+        for (int i = 0; i < cmd.data_num; i++) {
+            msg.data[i] = cmd.data[i];
+            ROS_DEBUG("Write data[%d]: %d", i, cmd.data[i]);
+        }
     }
 
-    // 发布查询消息到Modbus主节点
     query_pub_.publish(msg);
 
-    // 等待响应，若超时则返回失败
+    // 等待响应
     ros::Time start = ros::Time::now();
     while (busy_ && (ros::Time::now() - start).toSec() < TIMEOUT) {
         ros::spinOnce();
@@ -210,6 +199,7 @@ bool AmrRosBridge::ModbusHandler::sendCommand(const Command& cmd) {
     }
 
     if (busy_) {
+        ROS_WARN("Modbus command timeout");
         busy_ = false;
         error_ = 3;
         return false;
@@ -334,15 +324,13 @@ void AmrRosBridge::OdometryHandler::updateCommand(
  * @brief 发布TF变换和里程计数据
  * @param time 当前时间戳
  */
-void AmrRosBridge::OdometryHandler::publish(const ros::Time& time) {
+void AmrRosBridge::OdometryHandler::publish(const ros::Time& /*time*/) {
     std::lock_guard<std::mutex> lock(data_mutex_);
-
-    // 使用当前时间戳而不是传入的时间
     ros::Time current_time = ros::Time::now();
 
     // 发布 TF 变换
     geometry_msgs::TransformStamped tf_msg;
-    tf_msg.header.stamp = current_time;  // 使用当前时间
+    tf_msg.header.stamp = current_time;
     tf_msg.header.frame_id = odom_frame_id_;
     tf_msg.child_frame_id = base_frame_id_;
 
@@ -357,36 +345,38 @@ void AmrRosBridge::OdometryHandler::publish(const ros::Time& time) {
     tf_msg.transform.rotation.z = q.z();
     tf_msg.transform.rotation.w = q.w();
 
-    // 先发布 TF
     tf_broadcaster_.sendTransform(tf_msg);
 
     // 发布里程计消息
     nav_msgs::Odometry odom_msg;
-    odom_msg.header.stamp = current_time;  // 使用当前时间
+    odom_msg.header.stamp = current_time;
     odom_msg.header.frame_id = odom_frame_id_;
     odom_msg.child_frame_id = base_frame_id_;
 
-    // 设置位置和姿态
     odom_msg.pose.pose.position.x = pose_.x;
     odom_msg.pose.pose.position.y = pose_.y;
     odom_msg.pose.pose.position.z = 0.0;
     odom_msg.pose.pose.orientation = tf_msg.transform.rotation;
 
-    // 设置速度
     odom_msg.twist.twist.linear.x = velocity_.linear_x;
     odom_msg.twist.twist.linear.y = velocity_.linear_y;
     odom_msg.twist.twist.angular.z = velocity_.angular_z;
 
-    // 设置协方差矩阵
-    // 位置协方差：设置较小的值表示高确定性
+    // 设置协方差
+    for(int i = 0; i < 36; i++) {
+        odom_msg.pose.covariance[i] = 0.0;
+        odom_msg.twist.covariance[i] = 0.0;
+    }
     odom_msg.pose.covariance[0] = 0.001;   // x
     odom_msg.pose.covariance[7] = 0.001;   // y
     odom_msg.pose.covariance[35] = 0.001;  // yaw
+    odom_msg.twist.covariance[0] = 0.001;  // vx
+    odom_msg.twist.covariance[7] = 0.001;  // vy
+    odom_msg.twist.covariance[35] = 0.001; // vyaw
 
-    // 速度协方差：设置较小的值表示高确定性
-    odom_msg.twist.covariance[0] = 0.001;   // linear x
-    odom_msg.twist.covariance[7] = 0.001;   // linear y
-    odom_msg.twist.covariance[35] = 0.001;  // angular z
+    ROS_DEBUG("Publishing odom - pos: [%.2f, %.2f, %.2f], vel: [%.2f, %.2f, %.2f]",
+              pose_.x, pose_.y, pose_.yaw,
+              velocity_.linear_x, velocity_.linear_y, velocity_.angular_z);
 
     odom_pub_.publish(odom_msg);
 }
@@ -537,16 +527,22 @@ bool AmrRosBridge::init() {
 }
 
 // cmd_vel回调函数，用于接收速度指令
-void AmrRosBridge::cmdVelCallback(
-    const geometry_msgs::Twist::ConstPtr& msg) {
-    if (!running_) return;
+void AmrRosBridge::cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
+    if (!running_) {
+        ROS_WARN_THROTTLE(1.0, "AMR ROS Bridge not running, ignoring cmd_vel");
+        return;
+    }
 
     static ros::Time last_cmd_time = ros::Time::now();
     ros::Time current = ros::Time::now();
 
+    // 降低命令发送频率
     if ((current - last_cmd_time).toSec() < 0.05) {
         return;
     }
+
+    ROS_DEBUG("Received cmd_vel - linear: [%.2f, %.2f], angular: %.2f",
+              msg->linear.x, msg->linear.y, msg->angular.z);
 
     odom_->updateCommand(msg);
 
@@ -554,16 +550,17 @@ void AmrRosBridge::cmdVelCallback(
     int retry_count = 0;
     const int MAX_RETRY = 3;
 
-    while (retry_count < MAX_RETRY) {
+    while (retry_count < MAX_RETRY && ros::ok()) {
         if (modbus_->sendCommand(cmd)) {
             last_cmd_time = current;
             return;
         }
+        ROS_WARN("Retry sending velocity command (%d/%d)", retry_count + 1, MAX_RETRY);
         retry_count++;
-        ros::Duration(0.001).sleep();
+        ros::Duration(0.01).sleep();
     }
 
-    ROS_WARN_THROTTLE(1.0, "Failed to send velocity command after %d retries", MAX_RETRY);
+    ROS_ERROR("Failed to send velocity command after %d retries", MAX_RETRY);
 }
 
 // 主循环
