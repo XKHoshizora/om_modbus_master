@@ -3,7 +3,7 @@
  * @brief   AMR ROS桥接节点实现
  */
 
-#include "amr_ros_bridge.hpp"
+#include "om_modbus_master/amr_ros_bridge.hpp"
 
 // ModbusHandler实现
 AmrRosBridge::ModbusHandler::ModbusHandler(ros::NodeHandle& nh) {
