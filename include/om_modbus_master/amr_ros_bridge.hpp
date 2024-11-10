@@ -82,7 +82,7 @@ protected:
         volatile bool busy_{false};     // 通信忙状态
         volatile int error_{0};         // 错误状态
         std::queue<Command> cmd_queue_; // 命令队列
-        std::mutex queue_mutex_;        // 队列互斥锁
+        mutable std::mutex queue_mutex_;        // 队列互斥锁
 
         static constexpr int MAX_RETRY = 3;  // 最大重试次数
         static constexpr double TIMEOUT = 0.1; // 超时时间(s)
@@ -152,7 +152,7 @@ protected:
         ros::Publisher imu_pub_;    // IMU发布器
         const std::string frame_id_; // 坐标系ID
         const BridgeConfig& config_; // 配置参数引用
-        std::mutex data_mutex_;     // 数据互斥锁
+        mutable std::mutex data_mutex_;     // 数据互斥锁
 
         // IMU原始数据
         struct {
