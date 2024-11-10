@@ -167,7 +167,10 @@ int main(int argc, char** argv) {
     init_msg.write_addr = REG_MAP_START;
     init_msg.write_num = 32;
 
-    std::fill(init_msg.data, init_msg.data + 64, 0);
+    // 初始化数据数组
+    for(int i = 0; i < 64; i++) {
+        init_msg.data[i] = 0;
+    }
 
     // 配置寄存器映射关系
     init_msg.data[0] = 1069;  // 里程计X
