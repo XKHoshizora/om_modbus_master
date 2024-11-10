@@ -165,20 +165,22 @@ void AmrRosBridge::OdometryHandler::updateCommand(
                                     config_.max_angular_vel);
 }
 
-ModbusHandler::Command OdometryHandler::getReadCommand() {
-    Command cmd;
+AmrRosBridge::ModbusHandler::Command
+AmrRosBridge::OdometryHandler::getReadCommand() {
+    ModbusHandler::Command cmd;
     cmd.slave_id = 0x01;
     cmd.func_code = 0;  // 读取功能
     cmd.addr = ODOM_REG_ADDR;
     cmd.data_num = 3;   // x, y, yaw
-    cmd.type = CmdType::READ;
+    cmd.type = ModbusHandler::CmdType::READ;
     return cmd;
 }
 
-ModbusHandler::Command OdometryHandler::getWriteCommand() {
+AmrRosBridge::ModbusHandler::Command
+AmrRosBridge::OdometryHandler::getWriteCommand() {
     std::lock_guard<std::mutex> lock(data_mutex_);
 
-    Command cmd;
+    ModbusHandler::Command cmd;
     cmd.slave_id = 0x01;
     cmd.func_code = 1;  // 写入功能
     cmd.addr = VEL_REG_ADDR;
@@ -190,7 +192,7 @@ ModbusHandler::Command OdometryHandler::getWriteCommand() {
     cmd.data[2] = static_cast<int32_t>(velocity_.angular_z * 1000000.0);
     cmd.data[3] = static_cast<int32_t>(velocity_.linear_y * 1000.0);
 
-    cmd.type = CmdType::WRITE;
+    cmd.type = ModbusHandler::CmdType::WRITE;
     return cmd;
 }
 
@@ -288,13 +290,14 @@ void AmrRosBridge::ImuHandler::updateImu(
                        (1 - config_.imu_alpha) * imu_data_.gyro_z;
 }
 
-ModbusHandler::Command ImuHandler::getReadCommand() {
-    Command cmd;
+AmrRosBridge::ModbusHandler::Command
+AmrRosBridge::ImuHandler::getReadCommand() {
+    ModbusHandler::Command cmd;
     cmd.slave_id = 0x01;
     cmd.func_code = 0;
     cmd.addr = IMU_REG_ADDR;
     cmd.data_num = 6;  // ax, ay, az, gx, gy, gz
-    cmd.type = CmdType::READ;
+    cmd.type = ModbusHandler::CmdType::READ;
     return cmd;
 }
 
