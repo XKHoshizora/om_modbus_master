@@ -45,12 +45,16 @@ void AmrRosBridge::ImuHandler::publish(const ros::Time& time) {
 AmrRosBridge::ModbusHandler::Command AmrRosBridge::OdometryHandler::getWriteCommand() {
     AmrRosBridge::ModbusHandler::Command cmd;
     cmd.slave_id = 0x01;
-    cmd.func_code = 16; // 示例功能码
-    cmd.addr = VEL_REG_ADDR;
-    cmd.data_num = 4;
-    cmd.data[0] = static_cast<int32_t>(velocity_.linear_x * 1000); // 假设单位转换
+    cmd.func_code = 2;  // 使用读写功能码
+    cmd.read_addr = ODOM_REG_ADDR;  // 读取里程计数据
+    cmd.read_num = 9;               // 读取9个寄存器(包含IMU数据)
+    cmd.write_addr = VEL_REG_ADDR;  // 写入速度指令
+    cmd.write_num = 4;              // 写入4个寄存器
+    cmd.data[0] = static_cast<int32_t>(velocity_.linear_x * 1000);
     cmd.data[1] = static_cast<int32_t>(velocity_.linear_y * 1000);
     cmd.data[2] = static_cast<int32_t>(velocity_.angular_z * 1000);
+    cmd.data[3] = 0;  // 预留
+    cmd.type = ModbusHandler::CmdType::WRITE;
     return cmd;
 }
 
@@ -142,6 +146,12 @@ bool AmrRosBridge::ModbusHandler::init() {
  */
 bool AmrRosBridge::ModbusHandler::sendCommand(const Command& cmd) {
     std::lock_guard<std::mutex> lock(queue_mutex_);  // 保护命令队列的互斥锁
+
+    // 检查功能码是否有效
+    if (cmd.func_code != 1 && cmd.func_code != 2) {
+        ROS_ERROR("Invalid function code: %d", cmd.func_code);
+        return false;
+    }
 
     // 检查通信是否在忙碌状态
     if (busy_) {
@@ -468,9 +478,10 @@ bool AmrRosBridge::init() {
 
     ModbusHandler::Command addr_map_cmd;
     addr_map_cmd.slave_id = 0x01;
-    addr_map_cmd.func_code = 1;
+    addr_map_cmd.func_code = 1;  // 使用写入功能码
     addr_map_cmd.addr = 4864;
     addr_map_cmd.data_num = 32;
+    addr_map_cmd.type = ModbusHandler::CmdType::WRITE;
 
     addr_map_cmd.data[0] = 1069;
     addr_map_cmd.data[1] = 1070;
@@ -486,8 +497,6 @@ bool AmrRosBridge::init() {
     addr_map_cmd.data[18] = 995;
     addr_map_cmd.data[19] = 996;
 
-    addr_map_cmd.type = ModbusHandler::CmdType::WRITE;
-
     if (!modbus_->sendCommand(addr_map_cmd)) {
         ROS_ERROR("Failed to configure address mapping");
         return false;
@@ -497,11 +506,11 @@ bool AmrRosBridge::init() {
 
     ModbusHandler::Command test_cmd;
     test_cmd.slave_id = 0x01;
-    test_cmd.func_code = 2;
-    test_cmd.read_addr = 4928;
-    test_cmd.read_num = 9;
-    test_cmd.write_addr = 4960;
-    test_cmd.write_num = 4;
+    test_cmd.func_code = 2;      // 使用读写功能码
+    test_cmd.read_addr = 4928;   // 读取地址
+    test_cmd.read_num = 9;       // 读取9个寄存器
+    test_cmd.write_addr = 4960;  // 写入地址
+    test_cmd.write_num = 4;      // 写入4个寄存器
     test_cmd.data[0] = 0;
     test_cmd.data[1] = 0;
     test_cmd.data[2] = 0;
@@ -593,8 +602,8 @@ void AmrRosBridge::shutdown() {
 
     ModbusHandler::Command stop_cmd;
     stop_cmd.slave_id = 0x01;
-    stop_cmd.func_code = 1;
-    stop_cmd.addr = 4960;
+    stop_cmd.func_code = 1;  // 使用写入功能码
+    stop_cmd.addr = 4960;    // 速度指令地址
     stop_cmd.data_num = 4;
     std::fill(stop_cmd.data, stop_cmd.data + 4, 0);
     stop_cmd.type = ModbusHandler::CmdType::WRITE;
