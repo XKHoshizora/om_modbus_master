@@ -200,7 +200,10 @@ int main(int argc, char** argv) {
         query_msg.write_addr = REG_VEL_START;
         query_msg.write_num = 4;
 
-        std::fill(query_msg.data, query_msg.data + 64, 0);
+        // 初始化数据数组
+        for(int i = 0; i < 64; i++) {
+            query_msg.data[i] = 0;
+        }
 
         // 更新速度指令
         query_msg.data[0] = 1;  // 使能
