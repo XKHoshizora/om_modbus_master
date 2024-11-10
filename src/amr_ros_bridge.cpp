@@ -151,8 +151,8 @@ int main(int argc, char** argv) {
     ros::Subscriber cmd_vel_sub = nh.subscribe("cmd_vel", 1, cmdVelCallback);
 
     // 获取参数
-    double update_rate = 50.0;  // 默认50Hz
-    nh.param<double>("update_rate", update_rate, 50.0);
+    double update_rate = 20.0;  // 默认50Hz
+    nh.param<double>("update_rate", update_rate, 20.0);
     nh.param<std::string>("odom_frame", odom_frame, "odom");
     nh.param<std::string>("base_frame", base_frame, "base_footprint");
     nh.param<std::string>("imu_frame", imu_frame, "imu_link");
