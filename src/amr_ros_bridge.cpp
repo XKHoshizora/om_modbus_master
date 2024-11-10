@@ -32,22 +32,73 @@ bool AmrRosBridge::init() {
     ROS_INFO("Initializing AMR ROS Bridge...");
 
     // 设置寄存器映射
-    std::vector<int32_t> map_data = {
-        1069, 1070, 1071,  // 里程计 X,Y,Theta
-        1038, 1039, 1040,  // IMU加速度
-        1041, 1042, 1043,  // IMU角速度
-        0, 0, 0, 0, 0, 0, 0,
-        993, 994, 995, 996 // 速度控制
-    };
+    om_modbus_master::om_query init_msg;
+    init_msg.slave_id = 0x01;
+    init_msg.func_code = 1;
+    init_msg.write_addr = 4864;
+    init_msg.write_num = 32;
 
-    if (!sendModbusCommand(0x01, 1, 0, 0, 4864, map_data.size(), map_data)) {
-        ROS_ERROR("Failed to configure register mapping");
-        return false;
-    }
+    // 直接设置寄存器映射
+    init_msg.data[0] = 1069;  // 里程计X
+    init_msg.data[1] = 1070;  // 里程计Y
+    init_msg.data[2] = 1071;  // 里程计Theta
+    init_msg.data[3] = 1038;  // IMU加速度X
+    init_msg.data[4] = 1039;  // IMU加速度Y
+    init_msg.data[5] = 1040;  // IMU加速度Z
+    init_msg.data[6] = 1041;  // IMU角速度X
+    init_msg.data[7] = 1042;  // IMU角速度Y
+    init_msg.data[8] = 1043;  // IMU角速度Z
+    init_msg.data[16] = 993;  // 直接数据运行模式
+    init_msg.data[17] = 994;  // 前后平移速度(Vx)
+    init_msg.data[18] = 995;  // 角速度(ω)
+    init_msg.data[19] = 996;  // 左右平移速度(Vy)
 
+    query_pub_.publish(init_msg);
     ros::Duration(0.1).sleep();
+
+    // 初始化通信测试
+    om_modbus_master::om_query test_msg;
+    test_msg.slave_id = 0x01;
+    test_msg.func_code = 2;
+    test_msg.read_addr = 4928;
+    test_msg.read_num = 9;
+    test_msg.write_addr = 4960;
+    test_msg.write_num = 4;
+    test_msg.data[0] = 0;
+    test_msg.data[1] = 0;
+    test_msg.data[2] = 0;
+    test_msg.data[3] = 0;
+
+    query_pub_.publish(test_msg);
+    ros::Duration(0.1).sleep();
+
     running_ = true;
     return true;
+}
+
+void AmrRosBridge::cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
+    if (!running_) {
+        ROS_WARN_THROTTLE(1.0, "AMR ROS Bridge not running, ignoring cmd_vel");
+        return;
+    }
+
+    // 发送速度指令
+    om_modbus_master::om_query cmd_msg;
+    cmd_msg.slave_id = 0x01;
+    cmd_msg.func_code = 1;
+    cmd_msg.write_addr = 4960;
+    cmd_msg.write_num = 4;
+
+    // 限制速度并转换单位
+    cmd_msg.data[0] = 1;  // 使能
+    cmd_msg.data[1] = static_cast<int32_t>(
+        std::clamp(msg->linear.x, -MAX_LINEAR_VEL, MAX_LINEAR_VEL) * 1000);  // mm/s
+    cmd_msg.data[2] = static_cast<int32_t>(
+        std::clamp(msg->angular.z, -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL) * 1000000);  // μrad/s
+    cmd_msg.data[3] = static_cast<int32_t>(
+        std::clamp(msg->linear.y, -MAX_LINEAR_VEL, MAX_LINEAR_VEL) * 1000);  // mm/s
+
+    query_pub_.publish(cmd_msg);
 }
 
 void AmrRosBridge::run() {
@@ -59,9 +110,20 @@ void AmrRosBridge::run() {
     ros::Rate rate(update_rate_);
     while (ros::ok() && running_) {
         // 读取里程计和IMU数据
-        std::vector<int32_t> cmd_data = {1, 0, 0, 0}; // 默认速度指令
+        om_modbus_master::om_query query_msg;
+        query_msg.slave_id = 0x01;
+        query_msg.func_code = 2;
+        query_msg.read_addr = 4928;
+        query_msg.read_num = 9;
+        query_msg.write_addr = 4960;
+        query_msg.write_num = 4;
+        query_msg.data[0] = 1;
+        query_msg.data[1] = 0;
+        query_msg.data[2] = 0;
+        query_msg.data[3] = 0;
+
         if (!busy_) {
-            sendModbusCommand(0x01, 2, 4928, 9, 4960, 4, cmd_data);
+            query_pub_.publish(query_msg);
         }
 
         ros::Time current = ros::Time::now();
@@ -71,25 +133,6 @@ void AmrRosBridge::run() {
         ros::spinOnce();
         rate.sleep();
     }
-}
-
-void AmrRosBridge::cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
-    std::lock_guard<std::mutex> lock(data_mutex_);
-
-    // 限制速度在安全范围内
-    double vx = std::clamp(msg->linear.x, -MAX_LINEAR_VEL, MAX_LINEAR_VEL);
-    double vy = std::clamp(msg->linear.y, -MAX_LINEAR_VEL, MAX_LINEAR_VEL);
-    double vth = std::clamp(msg->angular.z, -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL);
-
-    // 发送速度指令
-    std::vector<int32_t> cmd_data = {
-        1,  // 使能
-        static_cast<int32_t>(vx * 1000),
-        static_cast<int32_t>(vth * 1000000),
-        static_cast<int32_t>(vy * 1000)
-    };
-
-    sendModbusCommand(0x01, 1, 0, 0, 4960, 4, cmd_data);
 }
 
 void AmrRosBridge::responseCallback(
@@ -102,7 +145,7 @@ void AmrRosBridge::responseCallback(
 
     std::lock_guard<std::mutex> lock(data_mutex_);
 
-    // 更新里程计数据
+    // 更新里程计数据 (mm -> m, μrad -> rad)
     odom_data_.x = msg->data[0] / 1000.0;
     odom_data_.y = msg->data[1] / 1000.0;
     odom_data_.yaw = msg->data[2] / 1000000.0;
@@ -181,45 +224,23 @@ void AmrRosBridge::publishImu(const ros::Time& time) {
     imu_pub_.publish(imu_msg);
 }
 
-bool AmrRosBridge::sendModbusCommand(uint8_t slave_id, uint8_t func_code,
-                                    uint16_t read_addr, uint16_t read_num,
-                                    uint16_t write_addr, uint16_t write_num,
-                                    const std::vector<int32_t>& data) {
-    if (busy_) return false;
-
-    om_modbus_master::om_query msg;
-    msg.slave_id = slave_id;
-    msg.func_code = func_code;
-    msg.read_addr = read_addr;
-    msg.read_num = read_num;
-    msg.write_addr = write_addr;
-    msg.write_num = write_num;
-
-    if (!data.empty()) {
-        std::copy(data.begin(), data.end(), msg.data);
-    }
-
-    busy_ = true;
-    query_pub_.publish(msg);
-
-    // 等待响应
-    ros::Time start = ros::Time::now();
-    while (busy_ && (ros::Time::now() - start).toSec() < TIMEOUT) {
-        ros::Duration(0.001).sleep();
-        ros::spinOnce();
-    }
-
-    return !busy_;
-}
-
 void AmrRosBridge::shutdown() {
     if (!running_) return;
 
     ROS_INFO("Shutting down AMR ROS Bridge...");
 
     // 发送停止命令
-    std::vector<int32_t> stop_cmd = {0, 0, 0, 0};
-    sendModbusCommand(0x01, 1, 0, 0, 4960, 4, stop_cmd);
+    om_modbus_master::om_query stop_msg;
+    stop_msg.slave_id = 0x01;
+    stop_msg.func_code = 1;
+    stop_msg.write_addr = 4960;
+    stop_msg.write_num = 4;
+    stop_msg.data[0] = 0;
+    stop_msg.data[1] = 0;
+    stop_msg.data[2] = 0;
+    stop_msg.data[3] = 0;
+
+    query_pub_.publish(stop_msg);
 
     running_ = false;
     ros::Duration(0.1).sleep();
