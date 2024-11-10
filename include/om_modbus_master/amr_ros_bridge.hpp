@@ -1,7 +1,8 @@
 /**
- * @file    amr_ros_bridge.hpp
- * @brief   AMR ROS桥接头文件，定义了AMR ROS Bridge节点的接口和实现
+ * @file amr_ros_bridge.hpp
+ * @brief AMR ROS桥接头文件，包含AMR ROS Bridge节点的接口和实现
  */
+
 #ifndef AMR_ROS_BRIDGE_HPP
 #define AMR_ROS_BRIDGE_HPP
 
@@ -46,6 +47,59 @@ public:
     bool init();  // 初始化
     void run();   // 主循环
     void shutdown();  // 关闭清理
+
+    // Modbus通信处理类
+    class ModbusHandler {
+    public:
+        enum class CmdType {
+            READ,    // 读取命令
+            WRITE,   // 写入命令
+            MONITOR  // 状态监控
+        };
+
+        struct Command {  // 命令结构体
+            uint8_t slave_id{0x01};      // 从站ID
+            uint8_t func_code{0};        // 功能码
+            uint32_t addr{0};            // 地址(用于单独读写)
+            uint32_t read_addr{0};       // 读取地址
+            uint32_t write_addr{0};      // 写入地址
+            uint8_t data_num{0};         // 数据数量(用于单独读写)
+            uint8_t read_num{0};         // 读取数量
+            uint8_t write_num{0};        // 写入数量
+            int32_t data[64]{};          // 数据
+            ros::Time timestamp;         // 时间戳
+            CmdType type{CmdType::READ}; // 命令类型
+        };
+
+        explicit ModbusHandler(ros::NodeHandle& nh,
+                          OdometryHandler* odom,
+                          ImuHandler* imu);
+
+        bool init(); // 初始化
+        bool sendCommand(const Command& cmd); // 发送命令
+
+    private:
+        OdometryHandler* odom_;  // 里程计处理器
+        ImuHandler* imu_;        // IMU处理器
+
+        void handleResponse(const om_modbus_master::om_response::ConstPtr& msg); // 处理Modbus响应
+        void handleState(const om_modbus_master::om_state::ConstPtr& msg);       // 处理Modbus状态
+
+        ros::Publisher query_pub_;      // 查询发布器
+        ros::Subscriber response_sub_;  // 响应订阅器
+        ros::Subscriber state_sub_;     // 状态订阅器
+
+        volatile bool busy_{false};     // 通信忙状态
+        volatile int error_{0};         // 错误状态
+        std::queue<Command> cmd_queue_; // 命令队列
+        mutable std::mutex queue_mutex_; // 队列互斥锁
+
+        static constexpr int MAX_RETRY = 3;  // 最大重试次数
+        static constexpr double TIMEOUT = 0.1; // 超时时间(s)
+
+        ros::Time last_busy_time_;  // 记录最后一次忙状态的开始时间
+        static constexpr double MIN_CMD_INTERVAL = 0.05;  // 最小命令间隔(20Hz)
+    };
 
     // 里程计处理类
     class OdometryHandler {
@@ -123,59 +177,6 @@ public:
 
         // Modbus寄存器地址
         static constexpr uint32_t IMU_REG_ADDR = 4928;  // IMU数据起始地址
-    };
-
-    // Modbus通信处理类
-    class ModbusHandler {
-    public:
-        enum class CmdType {
-            READ,    // 读取命令
-            WRITE,   // 写入命令
-            MONITOR  // 状态监控
-        };
-
-        struct Command {  // 命令结构体
-            uint8_t slave_id{0x01};      // 从站ID
-            uint8_t func_code{0};        // 功能码
-            uint32_t addr{0};            // 地址(用于单独读写)
-            uint32_t read_addr{0};       // 读取地址
-            uint32_t write_addr{0};      // 写入地址
-            uint8_t data_num{0};         // 数据数量(用于单独读写)
-            uint8_t read_num{0};         // 读取数量
-            uint8_t write_num{0};        // 写入数量
-            int32_t data[64]{};          // 数据
-            ros::Time timestamp;         // 时间戳
-            CmdType type{CmdType::READ}; // 命令类型
-        };
-
-        explicit ModbusHandler(ros::NodeHandle& nh,
-                          OdometryHandler* odom,
-                          ImuHandler* imu);
-
-        bool init(); // 初始化
-        bool sendCommand(const Command& cmd); // 发送命令
-
-    private:
-        OdometryHandler* odom_;  // 里程计处理器
-        ImuHandler* imu_;        // IMU处理器
-
-        void handleResponse(const om_modbus_master::om_response::ConstPtr& msg); // 处理Modbus响应
-        void handleState(const om_modbus_master::om_state::ConstPtr& msg);       // 处理Modbus状态
-
-        ros::Publisher query_pub_;      // 查询发布器
-        ros::Subscriber response_sub_;  // 响应订阅器
-        ros::Subscriber state_sub_;     // 状态订阅器
-
-        volatile bool busy_{false};     // 通信忙状态
-        volatile int error_{0};         // 错误状态
-        std::queue<Command> cmd_queue_; // 命令队列
-        mutable std::mutex queue_mutex_; // 队列互斥锁
-
-        static constexpr int MAX_RETRY = 3;  // 最大重试次数
-        static constexpr double TIMEOUT = 0.1; // 超时时间(s)
-
-        ros::Time last_busy_time_;  // 记录最后一次忙状态的开始时间
-        static constexpr double MIN_CMD_INTERVAL = 0.05;  // 最小命令间隔(20Hz)
     };
 
 private:

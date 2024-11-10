@@ -173,18 +173,18 @@ void AmrRosBridge::ModbusHandler::handleResponse(
     }
 
     // 检查数据长度是否满足要求
-    if (msg->func_code == 2 && msg->data_num < 9) {
-        ROS_WARN("Incomplete response data: got %d, expected 9", msg->data_num);
+    if (msg->func_code == 2 && msg->data.size() < 9) {
+        ROS_WARN("Incomplete response data: got %d, expected 9", static_cast<int>(msg->data.size()));
         error_ = 4;
         busy_ = false;
         return;
     }
 
     // 更新里程计和IMU数据
-    std::vector<int32_t> odom_data(msg->data, msg->data + 3);
+    std::vector<int32_t> odom_data(msg->data.begin(), msg->data.begin() + 3);
     odom_->updateOdometry(odom_data);
 
-    std::vector<int32_t> imu_data(msg->data + 3, msg->data + 9);
+    std::vector<int32_t> imu_data(msg->data.begin() + 3, msg->data.begin() + 9);
     imu_->updateImu(imu_data);
 
     error_ = 0;     // 重置错误状态
