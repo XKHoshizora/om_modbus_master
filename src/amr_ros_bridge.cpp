@@ -285,33 +285,28 @@ AmrRosBridge::OdometryHandler::OdometryHandler(
  * @brief 更新里程计数据
  * @param data 从Modbus响应中解析的里程计数据
  */
-void AmrRosBridge::OdometryHandler::updateOdometry(
-    const std::vector<int32_t>& data) {
+void AmrRosBridge::OdometryHandler::updateOdometry(const std::vector<int32_t>& data) {
+    std::lock_guard<std::mutex> lock(data_mutex_);
 
-    std::lock_guard<std::mutex> lock(data_mutex_); // 锁定数据互斥锁以确保线程安全
-
-    // 检查数据是否完整
     if (data.size() < 3) {
         ROS_WARN_THROTTLE(1.0, "Incomplete odometry data");
         return;
     }
 
-    // 解析里程计数据，将单位转换为米和弧度
-    double new_x = data[0] / 1000.0;
+    // 解析里程计数据
+    double new_x = data[0] / 1000.0;  // 转换为米
     double new_y = data[1] / 1000.0;
-    double new_yaw = data[2] / 1000000.0;
+    double new_yaw = data[2] / 1000000.0;  // 转换为弧度
 
-    // 检查位移和旋转是否显著，过滤掉微小的变化
-    if (std::abs(new_x - pose_.x) < config_.min_valid_distance &&
-        std::abs(new_y - pose_.y) < config_.min_valid_distance &&
-        std::abs(new_yaw - pose_.yaw) < config_.min_valid_rotation) {
-        return;
+    // 检查数据有效性
+    if (std::isfinite(new_x) && std::isfinite(new_y) && std::isfinite(new_yaw)) {
+        // 使用平滑因子更新位置
+        pose_.x = config_.odom_alpha * new_x + (1 - config_.odom_alpha) * pose_.x;
+        pose_.y = config_.odom_alpha * new_y + (1 - config_.odom_alpha) * pose_.y;
+        pose_.yaw = config_.odom_alpha * new_yaw + (1 - config_.odom_alpha) * pose_.yaw;
+    } else {
+        ROS_WARN_THROTTLE(1.0, "Invalid odometry data received");
     }
-
-    // 平滑更新里程计位置和偏航角，减小瞬时波动
-    pose_.x = config_.odom_alpha * new_x + (1 - config_.odom_alpha) * pose_.x;
-    pose_.y = config_.odom_alpha * new_y + (1 - config_.odom_alpha) * pose_.y;
-    pose_.yaw = config_.odom_alpha * new_yaw + (1 - config_.odom_alpha) * pose_.yaw;
 }
 
 /**
@@ -340,11 +335,14 @@ void AmrRosBridge::OdometryHandler::updateCommand(
  * @param time 当前时间戳
  */
 void AmrRosBridge::OdometryHandler::publish(const ros::Time& time) {
-    std::lock_guard<std::mutex> lock(data_mutex_);  // 确保数据的线程安全
+    std::lock_guard<std::mutex> lock(data_mutex_);
 
-    // 发布TF变换，描述里程计坐标和机器人底座坐标的关系
+    // 使用当前时间戳而不是传入的时间
+    ros::Time current_time = ros::Time::now();
+
+    // 发布 TF 变换
     geometry_msgs::TransformStamped tf_msg;
-    tf_msg.header.stamp = time;
+    tf_msg.header.stamp = current_time;  // 使用当前时间
     tf_msg.header.frame_id = odom_frame_id_;
     tf_msg.child_frame_id = base_frame_id_;
 
@@ -359,34 +357,36 @@ void AmrRosBridge::OdometryHandler::publish(const ros::Time& time) {
     tf_msg.transform.rotation.z = q.z();
     tf_msg.transform.rotation.w = q.w();
 
+    // 先发布 TF
     tf_broadcaster_.sendTransform(tf_msg);
 
-    // 创建并发布里程计消息
+    // 发布里程计消息
     nav_msgs::Odometry odom_msg;
-    odom_msg.header.stamp = time;
+    odom_msg.header.stamp = current_time;  // 使用当前时间
     odom_msg.header.frame_id = odom_frame_id_;
     odom_msg.child_frame_id = base_frame_id_;
 
+    // 设置位置和姿态
     odom_msg.pose.pose.position.x = pose_.x;
     odom_msg.pose.pose.position.y = pose_.y;
     odom_msg.pose.pose.position.z = 0.0;
     odom_msg.pose.pose.orientation = tf_msg.transform.rotation;
 
+    // 设置速度
     odom_msg.twist.twist.linear.x = velocity_.linear_x;
     odom_msg.twist.twist.linear.y = velocity_.linear_y;
     odom_msg.twist.twist.angular.z = velocity_.angular_z;
 
-    // 设置里程计和速度的协方差矩阵
-    for(int i = 0; i < 36; i++) {
-        odom_msg.pose.covariance[i] = 0.0;
-        odom_msg.twist.covariance[i] = 0.0;
-    }
-    odom_msg.pose.covariance[0] = 0.01;
-    odom_msg.pose.covariance[7] = 0.01;
-    odom_msg.pose.covariance[35] = 0.01;
-    odom_msg.twist.covariance[0] = 0.01;
-    odom_msg.twist.covariance[7] = 0.01;
-    odom_msg.twist.covariance[35] = 0.01;
+    // 设置协方差矩阵
+    // 位置协方差：设置较小的值表示高确定性
+    odom_msg.pose.covariance[0] = 0.001;   // x
+    odom_msg.pose.covariance[7] = 0.001;   // y
+    odom_msg.pose.covariance[35] = 0.001;  // yaw
+
+    // 速度协方差：设置较小的值表示高确定性
+    odom_msg.twist.covariance[0] = 0.001;   // linear x
+    odom_msg.twist.covariance[7] = 0.001;   // linear y
+    odom_msg.twist.covariance[35] = 0.001;  // angular z
 
     odom_pub_.publish(odom_msg);
 }
@@ -581,11 +581,15 @@ void AmrRosBridge::run() {
     while (ros::ok() && running_) {
         ros::Time current = ros::Time::now();
 
-        auto cmd = odom_->getWriteCommand();
-        if (modbus_->sendCommand(cmd)) {
-            odom_->publish(current);
-            imu_->publish(current);
-            last_update_time = current;
+        // 确保有足够频繁的更新
+        if ((current - last_update_time).toSec() >= (1.0 / config_.odom_rate)) {
+            auto cmd = odom_->getWriteCommand();
+            if (modbus_->sendCommand(cmd)) {
+                // 即使没有新数据也要发布 TF，保持变换树的更新
+                odom_->publish(current);
+                imu_->publish(current);
+                last_update_time = current;
+            }
         }
 
         ros::spinOnce();
