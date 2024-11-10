@@ -116,6 +116,7 @@ bool AmrRosBridge::ModbusHandler::sendCommand(const Command& cmd) {
     // 等待响应
     ros::Time start = ros::Time::now();
     while (busy_ && (ros::Time::now() - start).toSec() < TIMEOUT) {
+        ros::spinOnce();
         ros::Duration(0.001).sleep();  // 1ms
     }
 
@@ -131,6 +132,9 @@ void AmrRosBridge::ModbusHandler::handleResponse(
         busy_ = false;
         return;
     }
+
+    ROS_DEBUG("Received Modbus response: slave_id=0x%02X, func_code=0x%02X",
+              msg->slave_id, msg->func_code);
 
     // 检查响应的从站ID
     if (msg->slave_id != 0x01) {
@@ -486,7 +490,7 @@ bool AmrRosBridge::init() {
     test_cmd.type = ModbusHandler::CmdType::READ;
 
     int verify_retry = 0;
-    const int MAX_VERIFY_RETRY = 3;
+    const int MAX_VERIFY_RETRY = 5;
 
     while (verify_retry < MAX_VERIFY_RETRY) {
         if (modbus_->sendCommand(test_cmd)) {
