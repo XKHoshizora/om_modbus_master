@@ -257,6 +257,27 @@ void publishImu(const ros::Time& time) {
 int main(int argc, char** argv) {
     ros::init(argc, argv, "amr_ros_bridge");
     ros::NodeHandle nh;
+    ros::NodeHandle private_nh("~");  // 添加私有节点句柄
+
+    // 从参数服务器读取参数
+    private_nh.param<double>("max_linear_vel", MAX_LINEAR_VEL, 2.0);
+    private_nh.param<double>("max_angular_vel", MAX_ANGULAR_VEL, 6.2);
+
+    double cmd_timeout, odom_timeout;
+    private_nh.param<double>("cmd_timeout", cmd_timeout, 0.2);
+    private_nh.param<double>("odom_timeout", odom_timeout, 0.2);
+    safety_control.CMD_TIMEOUT = cmd_timeout;
+    safety_control.ODOM_TIMEOUT = odom_timeout;
+
+    // 读取坐标系参数
+    private_nh.param<std::string>("base_frame", base_frame, "base_footprint");
+    private_nh.param<std::string>("odom_frame", odom_frame, "odom");
+    private_nh.param<std::string>("imu_frame", imu_frame, "imu_link");
+
+    // 读取协方差参数
+    double pose_covariance, twist_covariance;
+    private_nh.param<double>("pose_covariance", pose_covariance, 0.01);
+    private_nh.param<double>("twist_covariance", twist_covariance, 0.01);
 
     // 创建TF广播器
     tf2_ros::TransformBroadcaster tf_broadcaster;
