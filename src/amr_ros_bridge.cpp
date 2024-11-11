@@ -21,11 +21,11 @@
 #include "om_modbus_master/om_response.h"
 #include "om_modbus_master/om_state.h"
 
-// 全局常量定义
-const double ACC_SCALE = 0.001;      // 加速度标定系数: raw * 0.001 = m/s²
-const double GYRO_SCALE = 0.000001;  // 角速度标定系数: raw * 0.000001 = rad/s
-const double MAX_LINEAR_VEL = 2.0;   // 最大线速度限制(m/s)
-const double MAX_ANGULAR_VEL = 6.2;  // 最大角速度限制(rad/s)
+// 全局变量定义
+double ACC_SCALE = 0.001;      // 加速度标定系数: raw * 0.001 = m/s²
+double GYRO_SCALE = 0.000001;  // 角速度标定系数: raw * 0.000001 = rad/s
+double MAX_LINEAR_VEL = 2.0;   // 最大线速度限制(m/s)
+double MAX_ANGULAR_VEL = 6.2;  // 最大角速度限制(rad/s)
 
 // Modbus寄存器地址
 const uint16_t REG_MAP_START = 4864;  // 寄存器映射起始地址
@@ -82,8 +82,8 @@ struct SafetyControl {
     ros::Time last_cmd_time;    // 最后一次接收到速度命令的时间
     ros::Time last_odom_time;   // 最后一次接收到里程计数据的时间
     std::atomic<bool> odom_healthy{false};
-    const double CMD_TIMEOUT = 0.2;    // 速度命令超时时间(seconds)
-    const double ODOM_TIMEOUT = 0.2;   // 里程计数据超时时间(seconds)
+    double CMD_TIMEOUT = 0.2;    // 速度命令超时时间(seconds)
+    double ODOM_TIMEOUT = 0.2;   // 里程计数据超时时间(seconds)
 } safety_control;
 
 // 互斥锁
@@ -260,14 +260,15 @@ int main(int argc, char** argv) {
     ros::NodeHandle private_nh("~");  // 添加私有节点句柄
 
     // 从参数服务器读取参数
-    private_nh.param<double>("max_linear_vel", MAX_LINEAR_VEL, 2.0);
-    private_nh.param<double>("max_angular_vel", MAX_ANGULAR_VEL, 6.2);
+    private_nh.param<double>("max_linear_vel", MAX_LINEAR_VEL);
+    private_nh.param<double>("max_angular_vel", MAX_ANGULAR_VEL);
 
-    double cmd_timeout, odom_timeout;
-    private_nh.param<double>("cmd_timeout", cmd_timeout, 0.2);
-    private_nh.param<double>("odom_timeout", odom_timeout, 0.2);
-    safety_control.CMD_TIMEOUT = cmd_timeout;
-    safety_control.ODOM_TIMEOUT = odom_timeout;
+    double cmd_timeout = 0.2;
+    double odom_timeout = 0.2;
+    private_nh.getParam("cmd_timeout", cmd_timeout);
+    private_nh.getParam("odom_timeout", odom_timeout);
+    safety_control.cmd_timeout = cmd_timeout;
+    safety_control.odom_timeout = odom_timeout;
 
     // 读取坐标系参数
     private_nh.param<std::string>("base_frame", base_frame, "base_footprint");
@@ -275,9 +276,10 @@ int main(int argc, char** argv) {
     private_nh.param<std::string>("imu_frame", imu_frame, "imu_link");
 
     // 读取协方差参数
-    double pose_covariance, twist_covariance;
-    private_nh.param<double>("pose_covariance", pose_covariance, 0.01);
-    private_nh.param<double>("twist_covariance", twist_covariance, 0.01);
+    double pose_covariance = 0.01;
+    double twist_covariance = 0.01;
+    private_nh.getParam("pose_covariance", pose_covariance);
+    private_nh.getParam("twist_covariance", twist_covariance);
 
     // 创建TF广播器
     tf2_ros::TransformBroadcaster tf_broadcaster;
@@ -363,12 +365,12 @@ int main(int argc, char** argv) {
         bool need_stop = false;
 
         // 安全检查：超时保护
-        if ((current_time - safety_control.last_cmd_time).toSec() > safety_control.CMD_TIMEOUT) {
+        if ((current_time - safety_control.last_cmd_time).toSec() > safety_control.cmd_timeout) {
             need_stop = true;
             ROS_DEBUG_THROTTLE(1.0, "Velocity command timeout, stopping robot");
         }
 
-        if ((current_time - safety_control.last_odom_time).toSec() > safety_control.ODOM_TIMEOUT) {
+        if ((current_time - safety_control.last_odom_time).toSec() > safety_control.odom_timeout) {
             need_stop = true;
             safety_control.odom_healthy = false;
             ROS_DEBUG_THROTTLE(1.0, "Odometry timeout, stopping robot");
