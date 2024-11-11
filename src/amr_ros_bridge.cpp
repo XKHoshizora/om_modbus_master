@@ -82,8 +82,8 @@ struct SafetyControl {
     ros::Time last_cmd_time;    // 最后一次接收到速度命令的时间
     ros::Time last_odom_time;   // 最后一次接收到里程计数据的时间
     std::atomic<bool> odom_healthy{false};
-    double CMD_TIMEOUT = 0.2;    // 速度命令超时时间(seconds)
-    double ODOM_TIMEOUT = 0.2;   // 里程计数据超时时间(seconds)
+    double cmd_timeout = 0.2;    // 速度命令超时时间(seconds)
+    double odom_timeout = 0.2;   // 里程计数据超时时间(seconds)
 } safety_control;
 
 // 互斥锁
