@@ -95,6 +95,11 @@ void responseCallback(const om_modbus_master::om_response::ConstPtr& msg) {
         robot_state.odom_x = msg->data[0] / 1000.0;      // mm -> m
         robot_state.odom_y = msg->data[1] / 1000.0;
         robot_state.odom_yaw = msg->data[2] / 1000000.0; // μrad -> rad
+
+        // 打印里程计数据
+        ROS_DEBUG_THROTTLE(1.0, "Odom: x=%.3f, y=%.3f, yaw=%.3f",
+            robot_state.odom_x, robot_state.odom_y, robot_state.odom_yaw);
+
         robot_state.acc_x = msg->data[3] * ACC_SCALE;    // 转换为m/s²
         robot_state.acc_y = msg->data[4] * ACC_SCALE;
         robot_state.acc_z = msg->data[5] * ACC_SCALE;
@@ -115,6 +120,10 @@ void cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
     latest_cmd.angular_z = std::clamp(msg->angular.z, -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL);
     latest_cmd.updated = true;
     safety_control.last_cmd_time = ros::Time::now();
+
+    // 打印速度命令
+    ROS_DEBUG("Cmd_vel received: linear=(%.3f, %.3f), angular=%.3f",
+        latest_cmd.linear_x, latest_cmd.linear_y, latest_cmd.angular_z);
 }
 
 // 发布里程计和TF数据
@@ -161,13 +170,16 @@ void publishOdomAndTf(const ros::Time& time) {
     odom_msg.pose.covariance[7] = 0.01;   // y
     odom_msg.pose.covariance[35] = 0.01;  // yaw
 
-    // 设置速度
-    odom_msg.twist.twist.linear.x = latest_cmd.linear_x;
-    odom_msg.twist.twist.linear.y = latest_cmd.linear_y;
-    odom_msg.twist.twist.linear.z = 0.0;
-    odom_msg.twist.twist.angular.x = 0.0;
-    odom_msg.twist.twist.angular.y = 0.0;
-    odom_msg.twist.twist.angular.z = latest_cmd.angular_z;
+    // 设置速度 - 这里应该使用实际的速度值，而不是命令值
+    {
+        std::lock_guard<std::mutex> cmd_lock(cmd_mutex);
+        odom_msg.twist.twist.linear.x = query_msg.data[1] / 1000.0;    // mm/s -> m/s
+        odom_msg.twist.twist.linear.y = query_msg.data[3] / 1000.0;    // mm/s -> m/s
+        odom_msg.twist.twist.linear.z = 0.0;
+        odom_msg.twist.twist.angular.x = 0.0;
+        odom_msg.twist.twist.angular.y = 0.0;
+        odom_msg.twist.twist.angular.z = query_msg.data[2] / 1000000.0; // μrad/s -> rad/s
+    }
 
     // 设置速度协方差
     for(int i = 0; i < 36; ++i) {
