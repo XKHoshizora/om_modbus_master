@@ -6,11 +6,13 @@
  *           2. 从Modbus设备读取里程计和IMU数据
  *           3. 发布里程计数据（odom话题和TF变换）
  *           4. 发布IMU数据（imu话题）
+ *           5. 发布电源数据（battery_state话题）
  */
 
 #include <ros/ros.h>
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/Imu.h>
+#include <sensor_msgs/BatteryState.h>
 #include <geometry_msgs/Twist.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2/LinearMath/Quaternion.h>
@@ -36,6 +38,7 @@ const uint16_t REG_VEL_START = 4960;  // 速度控制寄存器起始地址
 ros::Publisher query_pub;
 ros::Publisher odom_pub;
 ros::Publisher imu_pub;
+ros::Publisher battery_pub;
 tf2_ros::TransformBroadcaster* tf_broadcaster_ptr = nullptr;
 
 // 坐标系参数
@@ -67,6 +70,9 @@ struct RobotState {
     double vel_x_cmd = 0.0;         // 指令X方向速度 (m/s)
     double vel_y_cmd = 0.0;         // 指令Y方向速度 (m/s)
     double vel_angular_cmd = 0.0;    // 指令角速度 (rad/s)
+
+    // 当前电源电压
+    double current_voltage = 0.0;    // 电压 (V)
 } robot_state;
 
 // 速度指令结构体
@@ -126,11 +132,15 @@ void responseCallback(const om_modbus_master::om_response::ConstPtr& msg) {
         robot_state.vel_angular_cmd = msg->data[13] / 1000000.0; // μrad/s -> rad/s
         robot_state.vel_y_cmd = msg->data[14] / 1000.0;      // mm/s -> m/s
 
+        // 处理电源电压数据
+        robot_state.current_voltage = msg->data[15] / 10.0;  // 1=0.1V -> 1=1V
+
         // 打印调试信息
         ROS_DEBUG_THROTTLE(1.0, "Odom: x=%.3f, y=%.3f, yaw=%.3f",
             robot_state.odom_x, robot_state.odom_y, robot_state.odom_yaw);
         ROS_DEBUG_THROTTLE(1.0, "Velocity(actual): vx=%.3f, vy=%.3f, w=%.3f",
             robot_state.vel_x_actual, robot_state.vel_y_actual, robot_state.vel_angular_actual);
+        ROS_DEBUG_THROTTLE(1.0, "BatteryVoltage: %.3f", robot_state.current_voltage);
     }
 
     safety_control.last_odom_time = ros::Time::now();
@@ -254,6 +264,18 @@ void publishImu(const ros::Time& time) {
     imu_pub.publish(imu_msg);
 }
 
+// 发布电源数据
+void publishBattery(const ros::Time& time) {
+    std::lock_guard<std::mutex> lock(state_mutex);
+
+    sensor_msgs::BatteryState battery_msg;
+
+    battery_msg.header.stamp = time;
+    battery_msg.voltage = robot_state.current_voltage;
+
+    battery_pub.publish(battery_msg);
+}
+
 int main(int argc, char** argv) {
     ros::init(argc, argv, "amr_ros_bridge");
     ros::NodeHandle nh;
@@ -289,6 +311,7 @@ int main(int argc, char** argv) {
     query_pub = nh.advertise<om_modbus_master::om_query>("om_query1", 1);
     odom_pub = nh.advertise<nav_msgs::Odometry>("odom", 50);
     imu_pub = nh.advertise<sensor_msgs::Imu>("imu", 50);
+    battery_pub = nh.advertise<sensor_msgs::BatteryState>("battery_state", 1);
     ros::Subscriber response_sub = nh.subscribe("om_response1", 1, responseCallback);
     ros::Subscriber cmd_vel_sub = nh.subscribe("cmd_vel", 1, cmdVelCallback);
 
@@ -329,6 +352,9 @@ int main(int argc, char** argv) {
     init_msg.data[13] = 1252; // 当前角速度（指令）ω（1=0.000001[rad/s]），显示驱动器内部当前机器人角速度的指令值
     init_msg.data[14] = 1253; // 当前平移速度（指令）Vy（1=0.001[m/s]），显示驱动器内部当前机器人平移速度的指令值
 
+    // 电源电压
+    init_msg.data[15] = 163; // 当前电源电压（1=0.1[V]），显示当前电源电压
+
     // 驱动控制寄存器映射
     init_msg.data[16] = 993;  // 驾驶模式，设置直接数据驱动的模式（0：无效，1：Vω控制）
     init_msg.data[17] = 994;  // 前后平移速度Vx（1=0.001[m/s]），设置范围：-2000～2000
@@ -348,7 +374,7 @@ int main(int argc, char** argv) {
     query_msg.slave_id = 0x01;
     query_msg.func_code = 2;
     query_msg.read_addr = REG_ODOM_START;
-    query_msg.read_num = 15;  // 读取15个寄存器数据
+    query_msg.read_num = 16;  // 读取16个寄存器数据（3 里程计，6 IMU，3 实际速度，3 指令速度，1 电源电压）
     query_msg.write_addr = REG_VEL_START;
     query_msg.write_num = 4;  // 写入4个数据（使能+三个速度分量）
 
@@ -399,6 +425,7 @@ int main(int argc, char** argv) {
         // 发布数据
         publishOdomAndTf(current_time);
         publishImu(current_time);
+        publishBattery(current_time);
 
         ros::spinOnce();
         rate.sleep();
