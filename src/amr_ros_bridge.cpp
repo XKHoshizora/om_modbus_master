@@ -270,9 +270,37 @@ void publishBattery(const ros::Time& time) {
 
     sensor_msgs::BatteryState battery_msg;
 
-    battery_msg.header.stamp = time;
-    battery_msg.voltage = robot_state.current_voltage;
+    // 设置消息头
+    battery_msg.header.stamp = time;  // 时间戳，表示当前电池状态的记录时间
+    battery_msg.header.frame_id = "battery_frame";  // 坐标系，表示电池相关的参考坐标系
 
+    // 设置电池电压
+    battery_msg.voltage = robot_state.current_voltage;  // 从 robot_state 获取当前电池电压（单位：V）
+
+    // 设置当前未获取的字段为默认值或 NaN（非数字）
+    battery_msg.current = std::numeric_limits<float>::quiet_NaN();      // 电池电流，暂无数据，设置为 NaN
+    battery_msg.charge = std::numeric_limits<float>::quiet_NaN();       // 剩余电量，暂无数据，设置为 NaN
+    battery_msg.capacity = std::numeric_limits<float>::quiet_NaN();     // 当前容量，暂无数据，设置为 NaN
+    battery_msg.design_capacity = std::numeric_limits<float>::quiet_NaN(); // 设计容量，暂无数据，设置为 NaN
+    battery_msg.percentage = std::numeric_limits<float>::quiet_NaN();   // 剩余电量百分比，暂无数据，设置为 NaN
+
+    // 设置电源状态，使用标准枚举值
+    battery_msg.power_supply_status = sensor_msgs::BatteryState::POWER_SUPPLY_STATUS_UNKNOWN; // 电源状态未知
+    battery_msg.power_supply_health = sensor_msgs::BatteryState::POWER_SUPPLY_HEALTH_UNKNOWN; // 健康状态未知
+    battery_msg.power_supply_technology = sensor_msgs::BatteryState::POWER_SUPPLY_TECHNOLOGY_LION; // 锂离子电池
+
+    // 设置电池是否存在，假设电池存在
+    battery_msg.present = true;
+
+    // 设置单体电池电压数组和温度数组为空
+    battery_msg.cell_voltage.clear();      // 单体电池电压，暂无数据，设置为空数组
+    battery_msg.cell_temperature.clear();  // 单体电池温度，暂无数据，设置为空数组
+
+    // 设置电池位置和序列号
+    battery_msg.location = "robot_battery";  // 电池位置标识，设置为占位值
+    battery_msg.serial_number = "unknown";   // 电池序列号，设置为占位值
+
+    // 发布电池状态消息
     battery_pub.publish(battery_msg);
 }
 
